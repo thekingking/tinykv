@@ -11,40 +11,39 @@ import (
 // StandAloneStorage is an implementation of `Storage` for a single-node TinyKV instance. It does not
 // communicate with other nodes and all data is stored locally.
 type StandAloneStorage struct {
-	db *badger.DB
+	engine *engine_util.Engines
+	config *config.Config
 }
 
-type StandAloneStorageReader struct {
+type StandAloneReader struct {
 	txn *badger.Txn
 }
 
-func (r *StandAloneStorageReader) GetCF(cf string, key []byte) ([]byte, error) {
+func (r *StandAloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 	val, err := engine_util.GetCFFromTxn(r.txn, cf, key)
-	if err != nil {
-		return nil, err
+	if err == badger.ErrKeyNotFound {
+		return nil, nil
 	}
-	return val, nil
+	return val, err
 }
 
-func (r *StandAloneStorageReader) IterCF(cf string) engine_util.DBIterator {
-	iter := engine_util.NewCFIterator(cf, r.txn)
-	return iter
+func (r *StandAloneReader) IterCF(cf string) engine_util.DBIterator {
+	return engine_util.NewCFIterator(cf, r.txn)
 }
 
-func (r *StandAloneStorageReader) Close() {
+func (r *StandAloneReader) Close() {
 	r.txn.Discard()
 }
 
 func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
-	opts := badger.DefaultOptions
-	opts.Dir = conf.DBPath
-	opts.ValueDir = conf.DBPath
-	db, err := badger.Open(opts)
-	if err != nil {
-		return nil
-	}
+	kvPath := conf.DBPath + "/kv"
+	raftPath := conf.DBPath + "/raft"
+	kvEngine := engine_util.CreateDB(kvPath, false)
+	raftEngine := engine_util.CreateDB(raftPath, true)
+	engines := engine_util.NewEngines(kvEngine, raftEngine, kvPath, raftPath)
 	return &StandAloneStorage {
-		db: db,
+		engine: engines,
+		config: conf,
 	}
 }
 
@@ -54,30 +53,31 @@ func (s *StandAloneStorage) Start() error {
 }
 
 func (s *StandAloneStorage) Stop() error {
-	err := s.db.Close()
-	if err != nil {
-		return err
-	}
-	return nil
+	return s.engine.Close()
 }
 
 func (s *StandAloneStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, error) {
-	txn:= s.db.NewTransaction(false)
-	reader := StandAloneStorageReader {
+	txn:= s.engine.Kv.NewTransaction(false)
+	reader := StandAloneReader {
 		txn: txn,
 	}
 	return &reader, nil
 }
 
 func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) error {
-	err := s.db.Update(func(txn *badger.Txn) error {
-		for _, m := range batch {
-			err := txn.Set(engine_util.KeyWithCF(m.Cf(), m.Key()), m.Value())
+	for _, m := range batch {
+		switch m.Data.(type) {
+		case storage.Put: 
+			err := engine_util.PutCF(s.engine.Kv, m.Cf(), m.Key(), m.Value())
+			if err != nil {
+				return err
+			}
+		case storage.Delete: 
+			err := engine_util.DeleteCF(s.engine.Kv, m.Cf(), m.Key())
 			if err != nil {
 				return err
 			}
 		}
-		return nil
-	})
-	return err
+	}
+	return nil
 }
