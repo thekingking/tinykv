@@ -2,8 +2,8 @@ package server
 
 import (
 	"context"
-	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 	"github.com/pingcap-incubator/tinykv/kv/storage"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/kvrpcpb"
 )
 
 // The functions below are Server's Raw API. (implements TinyKvServer).
@@ -38,9 +38,9 @@ func (server *Server) RawPut(_ context.Context, req *kvrpcpb.RawPutRequest) (*kv
 
 // RawDelete delete the target data from storage and returns the corresponding response
 func (server *Server) RawDelete(_ context.Context, req *kvrpcpb.RawDeleteRequest) (*kvrpcpb.RawDeleteResponse, error) {
-	delete := storage.Delete {
+	delete := storage.Delete{
 		Key: req.Key,
-		Cf: req.Cf,
+		Cf:  req.Cf,
 	}
 	err := server.storage.Write(req.Context, []storage.Modify{{Data: delete}})
 	if err != nil {
