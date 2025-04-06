@@ -15,15 +15,15 @@
 package raft
 
 import (
+	"crypto/rand"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/big"
 	"os"
 	"os/exec"
 	"sort"
 	"strings"
-	"math/big"
-	"crypto/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )

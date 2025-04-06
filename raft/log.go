@@ -60,16 +60,16 @@ func newLog(storage Storage) *RaftLog {
 	hardState, _, _ := storage.InitialState()
 	firstIndex, _ := storage.FirstIndex()
 	lastIndex, _ := storage.LastIndex()
-	storageEntries, _ := storage.Entries(firstIndex, lastIndex + 1)
+	storageEntries, _ := storage.Entries(firstIndex, lastIndex+1)
 	entries := make([]pb.Entry, 1)
 	entries[0] = pb.Entry{}
 	entries = append(entries, storageEntries...)
-	return &RaftLog {
-		storage: storage,
-		applied: 0,
+	return &RaftLog{
+		storage:   storage,
+		applied:   0,
 		committed: hardState.Commit,
-		stabled: lastIndex,
-		entries: entries,
+		stabled:   lastIndex,
+		entries:   entries,
 	}
 }
 
@@ -89,12 +89,12 @@ func (l *RaftLog) allEntries() []pb.Entry {
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	return l.entries[l.stabled + 1:]
+	return l.entries[l.stabled+1:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
-	return l.entries[l.applied + 1 : l.committed + 1]
+	return l.entries[l.applied+1 : l.committed+1]
 }
 
 // LastIndex return the last index of the log entries
@@ -126,15 +126,14 @@ func (l *RaftLog) Append(entries []pb.Entry) error {
 }
 
 func (l *RaftLog) Stable(commit uint64) {
-	
+
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
-	ents := make([]*pb.Entry, hi - lo)
+	ents := make([]*pb.Entry, hi-lo)
 	firstIndex := l.entries[0].Index
 	for i := lo; i < hi; i++ {
-		ents[i - lo] = &l.entries[i - firstIndex]
+		ents[i-lo] = &l.entries[i-firstIndex]
 	}
 	return ents, nil
 }
-
