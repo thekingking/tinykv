@@ -117,7 +117,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	if len(l.entries) == 0 || i < l.entries[0].Index || i > l.LastIndex() {
 		return 0, nil
 	}
-	return l.entries[i - l.entries[0].Index].Term, nil
+	return l.entries[i-l.entries[0].Index].Term, nil
 }
 
 func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
@@ -127,7 +127,7 @@ func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
 	if len(entries) == 0 {
 		return true
 	}
-	if len(l.entries) == 0 || preIndex + 1 < l.entries[0].Index {
+	if len(l.entries) == 0 || preIndex+1 < l.entries[0].Index {
 		l.entries = make([]pb.Entry, 0)
 		l.stabled = preIndex
 	} else {

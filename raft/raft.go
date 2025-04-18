@@ -175,7 +175,7 @@ func newRaft(c *Config) *Raft {
 		log.applied = c.Applied
 		log.committed = hardState.Commit
 	}
-	
+
 	var prs map[uint64]*Progress
 	if c.peers != nil {
 		prs = make(map[uint64]*Progress, len(c.peers))
@@ -197,24 +197,24 @@ func newRaft(c *Config) *Raft {
 		RaftLog:          log,
 		Prs:              prs,
 		heartbeatTimeout: c.HeartbeatTick,
-		electionTimeout:  randElectionTimeout(c.ElectionTick, 2 * c.ElectionTick),
+		electionTimeout:  randElectionTimeout(c.ElectionTick, 2*c.ElectionTick),
 		heartbeatElapsed: 0,
 		electionElapsed:  0,
 	}
 }
 
 func (r *Raft) getSoftState() SoftState {
-	return SoftState {
-		Lead: r.Lead,
+	return SoftState{
+		Lead:      r.Lead,
 		RaftState: r.State,
 	}
 }
 
 func (r *Raft) GetHardState() pb.HardState {
 	return pb.HardState{
-		Term:    r.Term,
-		Vote:    r.Vote,
-		Commit:  r.RaftLog.committed,
+		Term:   r.Term,
+		Vote:   r.Vote,
+		Commit: r.RaftLog.committed,
 	}
 }
 
@@ -569,26 +569,26 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	}
 	r.heartbeatResp[m.From] = true
 	if m.Reject {
-		r.Prs[m.From].Next = m.Commit+1
+		r.Prs[m.From].Next = m.Commit + 1
 		r.sendAppend(m.From)
 	} else {
-		if m.Index + 1 < r.Prs[m.From].Next {
+		if m.Index+1 < r.Prs[m.From].Next {
 			// log.Infof("m.Index: %d, r.Prs[m.From].Next: %d", m.Index, r.Prs[m.From].Next)
 		}
 		r.Prs[m.From].Next = m.Index + 1
 		r.Prs[m.From].Match = r.Prs[m.From].Next - 1
 		// 差分数组
 		if term, _ := r.RaftLog.Term(m.Index); term == r.Term && m.Index > r.RaftLog.committed {
-			arr := make([]uint64, r.Prs[r.id].Next - r.RaftLog.committed)
+			arr := make([]uint64, r.Prs[r.id].Next-r.RaftLog.committed)
 			// logd.Infof("len(arr): %d, r.Prs[r.id].Next: %d, r.RaftLog.committed: %d", len(arr), r.Prs[r.id].Next, r.RaftLog.committed)
 			for _, p := range r.Prs {
 				if p.Match >= r.RaftLog.committed {
-					arr[p.Match - r.RaftLog.committed]++
+					arr[p.Match-r.RaftLog.committed]++
 				}
 			}
-			for i, n := len(arr) - 1, 0; i > 0; i-- {
+			for i, n := len(arr)-1, 0; i > 0; i-- {
 				n += int(arr[i])
-				if n > len(r.Prs) / 2 {
+				if n > len(r.Prs)/2 {
 					r.RaftLog.committed = r.RaftLog.committed + uint64(i)
 					r.sendAllAppend()
 					break
@@ -631,7 +631,7 @@ func (r *Raft) handleRequestVote(m pb.Message) {
 			r.Vote = m.From
 		}
 	}
-	
+
 	r.sendRequestVoteResponse(m.From, reject)
 }
 

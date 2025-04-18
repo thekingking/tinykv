@@ -310,7 +310,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	if len(entries) == 0 {
 		return nil
 	}
-	
+
 	lastIndex := ps.raftState.LastIndex
 	if entries[0].Index > lastIndex+1 {
 		return errors.Errorf("missing log entry [last: %d, append at: %d]", lastIndex, entries[0].Index)
@@ -323,7 +323,7 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 	}
 	ps.raftState.LastIndex = entries[len(entries)-1].Index
 	ps.raftState.LastTerm = entries[len(entries)-1].Term
-	
+
 	return nil
 }
 
@@ -365,7 +365,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if len(ready.CommittedEntries) > 0 {
 		ps.applyState.AppliedIndex = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
 	}
-	
+
 	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
 

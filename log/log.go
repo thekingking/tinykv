@@ -288,9 +288,9 @@ func NewLogger(prefix string) *Logger {
 	}
 	logPath := "/home/akin/work/tinykv/test.log"
 	file, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
-    if err != nil {
-        log.Fatalf("无法打开文件: %v", err)
-    }
+	if err != nil {
+		log.Fatalf("无法打开文件: %v", err)
+	}
 
 	multiWriter := io.MultiWriter(os.Stderr, file)
 	return &Logger{_log: log.New(multiWriter, prefix, LstdFlags), level: level, highlighting: true, file: file}

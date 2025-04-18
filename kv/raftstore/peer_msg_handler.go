@@ -49,7 +49,7 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	// log.Infof("%s handle raft ready", d.Tag)
 	ready := d.RaftGroup.Ready()
-	
+
 	d.Send(d.ctx.trans, ready.Messages)
 	if len(ready.CommittedEntries) > 0 {
 		for _, entry := range ready.CommittedEntries {
@@ -213,8 +213,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	}
 	d.proposals = append(d.proposals, &proposal{
 		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
-		term: d.RaftGroup.Raft.Term,
-		cb: cb,
+		term:  d.RaftGroup.Raft.Term,
+		cb:    cb,
 	})
 	data, err := msg.Marshal()
 	if err != nil {
