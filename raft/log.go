@@ -16,6 +16,7 @@ package raft
 
 import (
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	// "github.com/pingcap-incubator/tinykv/log"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -50,26 +51,20 @@ type RaftLog struct {
 	// the incoming unstable snapshot, if any.
 	// (Used in 2C)
 	pendingSnapshot *pb.Snapshot
-
-	// Your Data Here (2A).
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
-	hardState, _, _ := storage.InitialState()
 	firstIndex, _ := storage.FirstIndex()
 	lastIndex, _ := storage.LastIndex()
-	storageEntries, _ := storage.Entries(firstIndex, lastIndex+1)
-	entries := make([]pb.Entry, 1)
-	entries[0] = pb.Entry{}
-	entries = append(entries, storageEntries...)
+	entries, _ := storage.Entries(firstIndex, lastIndex+1)
 	return &RaftLog{
 		storage:   storage,
-		applied:   0,
-		committed: hardState.Commit,
 		stabled:   lastIndex,
 		entries:   entries,
+		committed: firstIndex - 1,
+		applied:   firstIndex - 1,
 	}
 }
 
@@ -84,49 +79,83 @@ func (l *RaftLog) maybeCompact() {
 // note, exclude any dummy entries from the return value.
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
-	return l.entries[1:]
+	return l.entries
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	return l.entries[l.stabled+1:]
+	if len(l.entries) == 0 {
+		return l.entries
+	}
+	firstIndex := l.entries[0].Index
+	offset := l.stabled - firstIndex + 1
+	return l.entries[offset:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
-	return l.entries[l.applied+1 : l.committed+1]
+	if len(l.entries) == 0 {
+		return l.entries
+	}
+	firstIndex := l.entries[0].Index
+	lo := l.applied + 1 - firstIndex
+	hi := l.committed + 1 - firstIndex
+	return l.entries[lo:hi]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	return l.entries[0].Index + uint64(len(l.entries)) - 1
+	if len(l.entries) == 0 {
+		lastIndex, _ := l.storage.LastIndex()
+		return lastIndex
+	}
+	return l.entries[len(l.entries)-1].Index
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	for _, entry := range l.entries {
-		if entry.Index == i {
-			return entry.Term, nil
+	if len(l.entries) == 0 || i < l.entries[0].Index || i > l.LastIndex() {
+		return 0, nil
+	}
+	return l.entries[i - l.entries[0].Index].Term, nil
+}
+
+func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
+	if term, _ := l.Term(preIndex); term != preTerm {
+		return false
+	}
+	if len(entries) == 0 {
+		return true
+	}
+	if len(l.entries) == 0 || preIndex + 1 < l.entries[0].Index {
+		l.entries = make([]pb.Entry, 0)
+		l.stabled = preIndex
+	} else {
+		offset := int(preIndex - l.entries[0].Index + 1)
+		old_entries := l.entries[offset:]
+		l.entries = l.entries[:offset]
+		for len(entries) > 0 && len(old_entries) > 0 {
+			if entries[0].Term != old_entries[0].Term {
+				break
+			}
+			l.entries = append(l.entries, old_entries[0])
+			old_entries = old_entries[1:]
+			entries = entries[1:]
+		}
+		if len(entries) == 0 {
+			l.entries = append(l.entries, old_entries...)
+		}
+		if len(l.entries) == 0 {
+			l.stabled = preIndex
+		} else {
+			l.stabled = min(l.stabled, l.entries[len(l.entries)-1].Index)
 		}
 	}
-	return 0, nil
-}
-
-func (l *RaftLog) Append(entries []pb.Entry) error {
-	if len(entries) == 0 {
-		return nil
+	for len(entries) > 0 {
+		l.entries = append(l.entries, *entries[0])
+		entries = entries[1:]
 	}
-	first := entries[0].Index
-	offset := first - l.entries[0].Index
-	l.storage.(*MemoryStorage).Append(l.unstableEntries())
-	l.stabled = offset - 1
-	l.entries = append(l.entries[:offset], entries...)
-
-	return nil
-}
-
-func (l *RaftLog) Stable(commit uint64) {
-
+	return true
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {

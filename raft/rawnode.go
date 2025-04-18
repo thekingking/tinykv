@@ -18,6 +18,7 @@ import (
 	"errors"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	// "github.com/pingcap-incubator/tinykv/log"
 )
 
 // ErrStepLocalMsg is returned when try to step a local raft message
@@ -70,12 +71,18 @@ type Ready struct {
 type RawNode struct {
 	Raft *Raft
 	// Your Data Here (2A).
+	softState SoftState
+	hardState pb.HardState
 }
 
 // NewRawNode returns a new RawNode given configuration and a list of raft peers.
 func NewRawNode(config *Config) (*RawNode, error) {
 	raft := newRaft(config)
-	return &RawNode{Raft: raft}, nil
+	return &RawNode{
+		Raft: raft,
+		softState: raft.getSoftState(),
+		hardState: raft.GetHardState(),
+	}, nil
 }
 
 // Tick advances the internal logical clock by a single tick.
@@ -142,26 +149,45 @@ func (rn *RawNode) Step(m pb.Message) error {
 
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
-	return Ready{
+	ready := Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
 	}
+	if softState := rn.Raft.getSoftState(); rn.softState != softState {
+		ready.SoftState = &softState
+	}
+	if hardState := rn.Raft.GetHardState(); !isHardStateEqual(rn.hardState, hardState) {
+		ready.HardState = hardState
+	}
+	return ready
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
 func (rn *RawNode) HasReady() bool {
-	return len(rn.Raft.msgs) > 0 ||
-		len(rn.Raft.RaftLog.unstableEntries()) > 0 ||
-		len(rn.Raft.RaftLog.nextEnts()) > 0
+	return len(rn.Raft.msgs) > 0 || 
+	rn.Raft.RaftLog.stabled != rn.Raft.RaftLog.LastIndex() || 
+	rn.Raft.RaftLog.applied != rn.Raft.RaftLog.committed ||
+	rn.softState != rn.Raft.getSoftState() ||
+	!isHardStateEqual(rn.hardState, rn.Raft.GetHardState())
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	rn.Raft.RaftLog.applied += uint64(len(rd.CommittedEntries))
-	rn.Raft.RaftLog.stabled += uint64(len(rd.Entries))
 	rn.Raft.msgs = nil
+	if len(rd.Entries) > 0 {
+		rn.Raft.RaftLog.stabled = rd.Entries[len(rd.Entries)-1].Index
+	} 
+	if len(rd.CommittedEntries) > 0 {
+		rn.Raft.RaftLog.applied = rd.CommittedEntries[len(rd.CommittedEntries)-1].Index
+	}
+	if rd.SoftState != nil {
+		rn.softState = *rd.SoftState
+	}
+	if !IsEmptyHardState(rd.HardState) {
+		rn.hardState = rd.HardState
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this

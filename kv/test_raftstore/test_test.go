@@ -209,6 +209,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					value := "x " + strconv.Itoa(cli) + " " + strconv.Itoa(j) + " y"
 					// log.Infof("%d: client new put %v,%v\n", cli, key, value)
 					cluster.MustPut([]byte(key), []byte(value))
+					// log.Infof("%d: client put result %v\n", cli, value)
 					last = NextValue(last, value)
 					j++
 				} else {
@@ -217,6 +218,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 					// log.Infof("%d: client new scan %v-%v\n", cli, start, end)
 					values := cluster.Scan([]byte(start), []byte(end))
 					v := string(bytes.Join(values, []byte("")))
+					// log.Infof("%d: client scan result %v\n", cli, v)
 					if v != last {
 						log.Fatalf("get wrong value, client %v\nwant:%v\ngot: %v\n", cli, last, v)
 					}
@@ -250,7 +252,7 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			time.Sleep(electionTimeout)
 		}
 
-		// log.Printf("wait for clients\n")
+		// log.Infof("wait for clients\n")
 		<-ch_clients
 
 		if crash {
@@ -268,6 +270,8 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			}
 		}
 
+		// log.Infof("%s: wait for clients to finish\n", title)
+
 		for cli := 0; cli < nclients; cli++ {
 			// log.Printf("read from clients %d\n", cli)
 			j := <-clnts[cli]
@@ -279,13 +283,17 @@ func GenericTest(t *testing.T, part string, nclients int, unreliable bool, crash
 			end := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", j)
 			values := cluster.Scan([]byte(start), []byte(end))
 			v := string(bytes.Join(values, []byte("")))
+			// log.Infof("%d: client scan result %v\n", cli, v)
 			checkClntAppends(t, cli, v, j)
 
 			for k := 0; k < j; k++ {
 				key := strconv.Itoa(cli) + " " + fmt.Sprintf("%08d", k)
+				// log.Infof("%d: client delete %v\n", cli, key)
 				cluster.MustDelete([]byte(key))
+				// log.Infof("%d: client delete result %v\n", cli, key)
 			}
 		}
+		// log.Infof("%s: all clients are done\n", title)
 
 		if maxraftlog > 0 {
 			time.Sleep(1 * time.Second)

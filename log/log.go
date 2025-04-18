@@ -141,6 +141,7 @@ type Logger struct {
 	_log         *log.Logger
 	level        LogLevel
 	highlighting bool
+	file         *os.File
 }
 
 func (l *Logger) SetHighlighting(highlighting bool) {
@@ -232,6 +233,13 @@ func (l *Logger) Infof(format string, v ...interface{}) {
 	l.logf(LOG_INFO, format, v...)
 }
 
+func (l *Logger) Close() error {
+	if l.file != nil {
+		return l.file.Close()
+	}
+	return nil
+}
+
 func StringToLogLevel(level string) LogLevel {
 	level = strings.ToLower(level)
 	switch level {
@@ -268,15 +276,26 @@ func LogTypeToString(t LogType) (string, string) {
 }
 
 func New() *Logger {
-	return NewLogger(os.Stderr, "")
+	return NewLogger("")
 }
 
-func NewLogger(w io.Writer, prefix string) *Logger {
+func NewLogger(prefix string) *Logger {
 	var level LogLevel
 	if l := os.Getenv("LOG_LEVEL"); len(l) != 0 {
 		level = StringToLogLevel(os.Getenv("LOG_LEVEL"))
 	} else {
 		level = LOG_LEVEL_INFO
 	}
-	return &Logger{_log: log.New(w, prefix, LstdFlags), level: level, highlighting: true}
+	logPath := "/home/akin/work/tinykv/test.log"
+	file, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
+    if err != nil {
+        log.Fatalf("无法打开文件: %v", err)
+    }
+
+	multiWriter := io.MultiWriter(os.Stderr, file)
+	return &Logger{_log: log.New(multiWriter, prefix, LstdFlags), level: level, highlighting: true, file: file}
+}
+
+func Close() error {
+	return _log.Close()
 }
