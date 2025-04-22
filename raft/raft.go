@@ -170,11 +170,8 @@ func newRaft(c *Config) *Raft {
 
 	hardState, confState, _ := c.Storage.InitialState()
 	log := newLog(c.Storage)
-	if !IsEmptyHardState(hardState) {
-		println("hardState", hardState.Term, hardState.Commit)
-		log.applied = c.Applied
-		log.committed = hardState.Commit
-	}
+	log.committed = max(log.committed, hardState.Commit)
+	log.applied = max(log.applied, c.Applied)
 
 	var prs map[uint64]*Progress
 	if c.peers != nil {
@@ -221,8 +218,6 @@ func (r *Raft) GetHardState() pb.HardState {
 func (r *Raft) startElection() {
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgHup,
-		From:    r.id,
-		To:      r.id,
 	})
 }
 
@@ -235,7 +230,6 @@ func (r *Raft) startBeat() {
 func (r *Raft) startPropose() {
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
-		To:      r.id,
 		Entries: []*pb.Entry{{}},
 	})
 }
@@ -252,7 +246,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if r.State != StateLeader {
 		return false
 	}
-	r.heartbeatElapsed = 0
+	if r.Prs[to].Next < r.RaftLog.FirstIndex() {
+		r.sendSnapshot(to)
+		return true
+	}
 	prevIndex := r.Prs[to].Next - 1
 	term, _ := r.RaftLog.Term(prevIndex)
 	entries, _ := r.RaftLog.Entries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
@@ -269,7 +266,22 @@ func (r *Raft) sendAppend(to uint64) bool {
 	return true
 }
 
+func (r *Raft) sendSnapshot(to uint64) {
+	if r.RaftLog.pendingSnapshot == nil {
+		snapshot, _ := r.RaftLog.storage.Snapshot()
+		r.RaftLog.pendingSnapshot = &snapshot
+	}
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType:  pb.MessageType_MsgSnapshot,
+		Term:     r.Term,
+		From:     r.id,
+		To:       to,
+		Snapshot: r.RaftLog.pendingSnapshot,
+	})
+}
+
 func (r *Raft) sendAllAppend() {
+	r.heartbeatElapsed = 0
 	for id := range r.Prs {
 		if id == r.id {
 			continue
@@ -358,7 +370,6 @@ func (r *Raft) tick() {
 	case StateCandidate:
 		if r.electionElapsed >= r.electionTimeout {
 			r.startTimeoutNow()
-
 		}
 	case StateLeader:
 		// 若有一半以上的节点返回了心跳响应，则可以认为该节点继续当选Leader
@@ -463,6 +474,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, m.From)
@@ -496,6 +508,7 @@ func (r *Raft) CandidateStep(m pb.Message) error {
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		if m.Term >= r.Term {
 			r.becomeFollower(m.Term, m.From)
@@ -531,6 +544,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		}
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
+		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, m.From)
@@ -572,9 +586,6 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		r.Prs[m.From].Next = m.Commit + 1
 		r.sendAppend(m.From)
 	} else {
-		if m.Index+1 < r.Prs[m.From].Next {
-			// log.Infof("m.Index: %d, r.Prs[m.From].Next: %d", m.Index, r.Prs[m.From].Next)
-		}
 		r.Prs[m.From].Next = m.Index + 1
 		r.Prs[m.From].Match = r.Prs[m.From].Next - 1
 		// 差分数组
@@ -694,7 +705,20 @@ func (r *Raft) handlePropose(m pb.Message) error {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	// Your Code Here (2C).
+	if m.Term < r.Term {
+		return
+	}
+	r.becomeFollower(m.Term, m.From)
+	if m.Snapshot == nil {
+		return
+	}
+	if m.Snapshot.Metadata.ConfState != nil {
+		r.Prs = make(map[uint64]*Progress, len(m.Snapshot.Metadata.ConfState.Nodes))
+		for _, id := range m.Snapshot.Metadata.ConfState.Nodes {
+			r.Prs[id] = &Progress{}
+		}
+	}
+	r.RaftLog.ApplySnapshot(m.Snapshot)
 }
 
 func (r *Raft) handleTimeoutNow(m pb.Message) {

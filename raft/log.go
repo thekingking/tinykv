@@ -15,8 +15,8 @@
 package raft
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
-	// "github.com/pingcap-incubator/tinykv/log"
 )
 
 // RaftLog manage the log entries, its struct look like:
@@ -56,9 +56,14 @@ type RaftLog struct {
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
+	entries := make([]pb.Entry, 1)
 	firstIndex, _ := storage.FirstIndex()
+	term, _ := storage.Term(firstIndex - 1)
+	entries[0].Index = firstIndex - 1
+	entries[0].Term = term
 	lastIndex, _ := storage.LastIndex()
-	entries, _ := storage.Entries(firstIndex, lastIndex+1)
+	ents, _ := storage.Entries(firstIndex, lastIndex+1)
+	entries = append(entries, ents...)
 	return &RaftLog{
 		storage:   storage,
 		stabled:   lastIndex,
@@ -79,14 +84,11 @@ func (l *RaftLog) maybeCompact() {
 // note, exclude any dummy entries from the return value.
 // note, this is one of the test stub functions you need to implement.
 func (l *RaftLog) allEntries() []pb.Entry {
-	return l.entries
+	return l.entries[1:]
 }
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	if len(l.entries) == 0 {
-		return l.entries
-	}
 	firstIndex := l.entries[0].Index
 	offset := l.stabled - firstIndex + 1
 	return l.entries[offset:]
@@ -97,60 +99,50 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	if len(l.entries) == 0 {
 		return l.entries
 	}
-	firstIndex := l.entries[0].Index
-	lo := l.applied + 1 - firstIndex
-	hi := l.committed + 1 - firstIndex
+	offset := l.entries[0].Index
+	lo := l.applied + 1 - offset
+	hi := l.committed + 1 - offset
 	return l.entries[lo:hi]
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	if len(l.entries) == 0 {
-		lastIndex, _ := l.storage.LastIndex()
-		return lastIndex
-	}
-	return l.entries[len(l.entries)-1].Index
+	return l.entries[0].Index + uint64(len(l.entries)) - 1
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	return l.entries[0].Index + 1
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	if len(l.entries) == 0 || i < l.entries[0].Index || i > l.LastIndex() {
-		return 0, nil
+	offset := l.entries[0].Index
+	if i < offset {
+		return 0, ErrCompacted
 	}
-	return l.entries[i-l.entries[0].Index].Term, nil
+	if int(i-offset) >= len(l.entries) {
+		return 0, ErrUnavailable
+	}
+	return l.entries[i-offset].Term, nil
 }
 
 func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
-	if term, _ := l.Term(preIndex); term != preTerm {
+	if term, err := l.Term(preIndex); err != nil || term != preTerm {
 		return false
+	}
+	offset := l.entries[0].Index
+	for len(entries) > 0 {
+		firstIndex := entries[0].Index
+		if firstIndex > l.LastIndex() || l.entries[firstIndex-offset].Term != entries[0].Term {
+			break
+		}
+		entries = entries[1:]
 	}
 	if len(entries) == 0 {
 		return true
 	}
-	if len(l.entries) == 0 || preIndex+1 < l.entries[0].Index {
-		l.entries = make([]pb.Entry, 0)
-		l.stabled = preIndex
-	} else {
-		offset := int(preIndex - l.entries[0].Index + 1)
-		old_entries := l.entries[offset:]
-		l.entries = l.entries[:offset]
-		for len(entries) > 0 && len(old_entries) > 0 {
-			if entries[0].Term != old_entries[0].Term {
-				break
-			}
-			l.entries = append(l.entries, old_entries[0])
-			old_entries = old_entries[1:]
-			entries = entries[1:]
-		}
-		if len(entries) == 0 {
-			l.entries = append(l.entries, old_entries...)
-		}
-		if len(l.entries) == 0 {
-			l.stabled = preIndex
-		} else {
-			l.stabled = min(l.stabled, l.entries[len(l.entries)-1].Index)
-		}
-	}
+	l.entries = l.entries[:entries[0].Index-offset]
+	l.stabled = min(l.stabled, l.LastIndex())
 	for len(entries) > 0 {
 		l.entries = append(l.entries, *entries[0])
 		entries = entries[1:]
@@ -159,10 +151,43 @@ func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
 }
 
 func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
+	offset := l.entries[0].Index
+	if lo <= offset {
+		return nil, ErrCompacted
+	}
+	if hi > l.LastIndex()+1 {
+		log.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, l.LastIndex())
+	}
+	if len(l.entries) == 1 && lo < hi {
+		return nil, ErrUnavailable
+	}
+
 	ents := make([]*pb.Entry, hi-lo)
-	firstIndex := l.entries[0].Index
 	for i := lo; i < hi; i++ {
-		ents[i-lo] = &l.entries[i-firstIndex]
+		ents[i-lo] = &l.entries[i-offset]
 	}
 	return ents, nil
+}
+
+func (l *RaftLog) ApplySnapshot(snap *pb.Snapshot) {
+	if snap.Metadata.Index < l.FirstIndex() {
+		return
+	}
+	l.pendingSnapshot = snap
+	if snap.Metadata.Index >= l.LastIndex() {
+		l.entries = make([]pb.Entry, 1)
+		l.entries[0].Index = snap.Metadata.Index
+		l.entries[0].Term = snap.Metadata.Term
+
+		l.applied = snap.Metadata.Index
+		l.committed = snap.Metadata.Index
+		l.stabled = snap.Metadata.Index
+	} else {
+		offset := l.entries[0].Index
+		l.entries = l.entries[snap.Metadata.Index-offset:]
+
+		l.applied = max(l.applied, snap.Metadata.Index)
+		l.committed = max(l.committed, snap.Metadata.Index)
+		l.stabled = max(l.stabled, snap.Metadata.Index)
+	}
 }

@@ -160,6 +160,9 @@ func (rn *RawNode) Ready() Ready {
 	if hardState := rn.Raft.GetHardState(); !isHardStateEqual(rn.hardState, hardState) {
 		ready.HardState = hardState
 	}
+	if rn.Raft.RaftLog.pendingSnapshot != nil {
+		ready.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
 	return ready
 }
 
@@ -169,7 +172,8 @@ func (rn *RawNode) HasReady() bool {
 		rn.Raft.RaftLog.stabled != rn.Raft.RaftLog.LastIndex() ||
 		rn.Raft.RaftLog.applied != rn.Raft.RaftLog.committed ||
 		rn.softState != rn.Raft.getSoftState() ||
-		!isHardStateEqual(rn.hardState, rn.Raft.GetHardState())
+		!isHardStateEqual(rn.hardState, rn.Raft.GetHardState()) ||
+		rn.Raft.RaftLog.pendingSnapshot != nil
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
@@ -187,6 +191,9 @@ func (rn *RawNode) Advance(rd Ready) {
 	}
 	if !IsEmptyHardState(rd.HardState) {
 		rn.hardState = rd.HardState
+	}
+	if !IsEmptySnap(&rd.Snapshot) {
+		rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 }
 
