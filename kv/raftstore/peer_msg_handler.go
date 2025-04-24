@@ -99,7 +99,21 @@ func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResp
 		return ErrResp(err)
 	}
 	if cmd_req.AdminRequest != nil {
-
+		switch cmd_req.AdminRequest.CmdType {
+			case raft_cmdpb.AdminCmdType_CompactLog:
+				compactLogReq := cmd_req.AdminRequest.CompactLog
+				d.ScheduleCompactLog(compactLogReq.CompactIndex)
+				d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
+				d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
+				cmd_resp.AdminResponse = &raft_cmdpb.AdminResponse{
+					CmdType: raft_cmdpb.AdminCmdType_CompactLog,
+					CompactLog: &raft_cmdpb.CompactLogResponse{},
+				}
+			case raft_cmdpb.AdminCmdType_Split:
+			case raft_cmdpb.AdminCmdType_TransferLeader:
+			case raft_cmdpb.AdminCmdType_ChangePeer:
+			case raft_cmdpb.AdminCmdType_InvalidAdmin:
+		}
 	}
 	for _, req := range cmd_req.Requests {
 		// log.Infof("%s handle raft command %s", d.Tag, req)
@@ -207,7 +221,16 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
-		// log.Infof("%s pre propose raft command error %v", d.Tag, err)
+		cb.Done(ErrResp(err))
+		return
+	}
+	data, err := msg.Marshal()
+	if err != nil {
+		cb.Done(ErrResp(err))
+		return
+	}
+	err = d.RaftGroup.Propose(data)
+	if err != nil {
 		cb.Done(ErrResp(err))
 		return
 	}
@@ -216,17 +239,6 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		term:  d.RaftGroup.Raft.Term,
 		cb:    cb,
 	})
-	data, err := msg.Marshal()
-	if err != nil {
-		cb.Done(ErrResp(err))
-		return
-	}
-	// log.Infof("%s propose command %s", d.Tag, msg)
-	err = d.RaftGroup.Propose(data)
-	if err != nil {
-		cb.Done(ErrResp(err))
-		return
-	}
 }
 
 func (d *peerMsgHandler) onTick() {

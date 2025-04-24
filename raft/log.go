@@ -78,6 +78,15 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
+	if FirstIndex, _ := l.storage.FirstIndex(); l.FirstIndex() > FirstIndex {
+		if l.LastIndex() <= FirstIndex {
+			l.entries = l.entries[:1]
+			l.entries[0].Index = FirstIndex - 1
+			l.entries[0].Term, _ = l.storage.Term(FirstIndex - 1)
+		} else {
+			l.entries = l.entries[FirstIndex-l.entries[0].Index:]
+		}
+	}
 }
 
 // allEntries return all the entries not compacted.
@@ -170,24 +179,13 @@ func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
 }
 
 func (l *RaftLog) ApplySnapshot(snap *pb.Snapshot) {
-	if snap.Metadata.Index < l.FirstIndex() {
-		return
-	}
 	l.pendingSnapshot = snap
-	if snap.Metadata.Index >= l.LastIndex() {
-		l.entries = make([]pb.Entry, 1)
-		l.entries[0].Index = snap.Metadata.Index
-		l.entries[0].Term = snap.Metadata.Term
+	
+	l.entries = make([]pb.Entry, 1)
+	l.entries[0].Index = snap.Metadata.Index
+	l.entries[0].Term = snap.Metadata.Term
 
-		l.applied = snap.Metadata.Index
-		l.committed = snap.Metadata.Index
-		l.stabled = snap.Metadata.Index
-	} else {
-		offset := l.entries[0].Index
-		l.entries = l.entries[snap.Metadata.Index-offset:]
-
-		l.applied = max(l.applied, snap.Metadata.Index)
-		l.committed = max(l.committed, snap.Metadata.Index)
-		l.stabled = max(l.stabled, snap.Metadata.Index)
-	}
+	l.applied = snap.Metadata.Index
+	l.committed = snap.Metadata.Index
+	l.stabled = snap.Metadata.Index
 }

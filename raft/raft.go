@@ -246,29 +246,33 @@ func (r *Raft) sendAppend(to uint64) bool {
 	if r.State != StateLeader {
 		return false
 	}
-	if r.Prs[to].Next < r.RaftLog.FirstIndex() {
+	index := r.Prs[to].Next - 1
+	term, err := r.RaftLog.Term(index)
+
+	if err == ErrCompacted {
 		r.sendSnapshot(to)
-		return true
+	} else {
+		entries, _ := r.RaftLog.Entries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
+		r.msgs = append(r.msgs, pb.Message{
+			MsgType: pb.MessageType_MsgAppend,
+			Term:    r.Term,
+			From:    r.id,
+			To:      to,
+			Commit:  r.RaftLog.committed,
+			Index:   index,
+			LogTerm: term,
+			Entries: entries,
+		})
 	}
-	prevIndex := r.Prs[to].Next - 1
-	term, _ := r.RaftLog.Term(prevIndex)
-	entries, _ := r.RaftLog.Entries(r.Prs[to].Next, r.RaftLog.LastIndex()+1)
-	r.msgs = append(r.msgs, pb.Message{
-		MsgType: pb.MessageType_MsgAppend,
-		Term:    r.Term,
-		From:    r.id,
-		To:      to,
-		Commit:  r.RaftLog.committed,
-		Index:   prevIndex,
-		LogTerm: term,
-		Entries: entries,
-	})
 	return true
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
 	if r.RaftLog.pendingSnapshot == nil {
-		snapshot, _ := r.RaftLog.storage.Snapshot()
+		snapshot, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			return
+		}
 		r.RaftLog.pendingSnapshot = &snapshot
 	}
 	r.msgs = append(r.msgs, pb.Message{
@@ -361,6 +365,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	r.electionElapsed++
+	r.RaftLog.maybeCompact()
 	// log.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.election: %d, tick: %d, r.heartbeat: %d, r.heartelpased: %d, LastIndex: %d, Commited: %d, Applied: %d", r.id, r.Term, r.Lead, r.electionTimeout, r.electionElapsed, r.heartbeatTimeout, r.heartbeatElapsed, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
 	switch r.State {
 	case StateFollower:
@@ -709,16 +714,19 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		return
 	}
 	r.becomeFollower(m.Term, m.From)
-	if m.Snapshot == nil {
-		return
-	}
-	if m.Snapshot.Metadata.ConfState != nil {
-		r.Prs = make(map[uint64]*Progress, len(m.Snapshot.Metadata.ConfState.Nodes))
-		for _, id := range m.Snapshot.Metadata.ConfState.Nodes {
-			r.Prs[id] = &Progress{}
+	reject := false
+	if m.Snapshot == nil || m.Snapshot.Metadata.Index <= r.RaftLog.committed {
+		reject = true
+	} else {
+		if m.Snapshot.Metadata.ConfState != nil {
+			r.Prs = make(map[uint64]*Progress, len(m.Snapshot.Metadata.ConfState.Nodes))
+			for _, id := range m.Snapshot.Metadata.ConfState.Nodes {
+				r.Prs[id] = &Progress{}
+			}
 		}
+		r.RaftLog.ApplySnapshot(m.Snapshot)
 	}
-	r.RaftLog.ApplySnapshot(m.Snapshot)
+	r.sendAppendResponse(m.From, reject)
 }
 
 func (r *Raft) handleTimeoutNow(m pb.Message) {
