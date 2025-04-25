@@ -100,23 +100,18 @@ func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResp
 	}
 	if cmd_req.AdminRequest != nil {
 		switch cmd_req.AdminRequest.CmdType {
-			case raft_cmdpb.AdminCmdType_CompactLog:
-				compactLogReq := cmd_req.AdminRequest.CompactLog
-				d.ScheduleCompactLog(compactLogReq.CompactIndex)
-				d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
-				d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
-				cmd_resp.AdminResponse = &raft_cmdpb.AdminResponse{
-					CmdType: raft_cmdpb.AdminCmdType_CompactLog,
-					CompactLog: &raft_cmdpb.CompactLogResponse{},
-				}
-			case raft_cmdpb.AdminCmdType_Split:
-			case raft_cmdpb.AdminCmdType_TransferLeader:
-			case raft_cmdpb.AdminCmdType_ChangePeer:
-			case raft_cmdpb.AdminCmdType_InvalidAdmin:
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			compactLogReq := cmd_req.AdminRequest.CompactLog
+			d.ScheduleCompactLog(compactLogReq.CompactIndex)
+			d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
+			d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
+		case raft_cmdpb.AdminCmdType_Split:
+		case raft_cmdpb.AdminCmdType_TransferLeader:
+		case raft_cmdpb.AdminCmdType_ChangePeer:
+		case raft_cmdpb.AdminCmdType_InvalidAdmin:
 		}
 	}
 	for _, req := range cmd_req.Requests {
-		// log.Infof("%s handle raft command %s", d.Tag, req)
 		resp := &raft_cmdpb.Response{
 			CmdType: req.CmdType,
 		}
@@ -221,24 +216,32 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	err := d.preProposeRaftCommand(msg)
 	if err != nil {
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
 	data, err := msg.Marshal()
 	if err != nil {
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
-		cb.Done(ErrResp(err))
+		if cb != nil {
+			cb.Done(ErrResp(err))
+		}
 		return
 	}
-	d.proposals = append(d.proposals, &proposal{
-		index: d.RaftGroup.Raft.RaftLog.LastIndex() + 1,
-		term:  d.RaftGroup.Raft.Term,
-		cb:    cb,
-	})
+	if cb != nil {
+		d.proposals = append(d.proposals, &proposal{
+			index: d.RaftGroup.Raft.RaftLog.LastIndex(),
+			term:  d.RaftGroup.Raft.Term,
+			cb:    cb,
+		})
+	}
 }
 
 func (d *peerMsgHandler) onTick() {

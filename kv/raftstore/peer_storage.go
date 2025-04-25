@@ -335,26 +335,30 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		return nil, err
 	}
 
+	if !ps.validateSnap(snapshot) {
+		return nil, nil
+	}
+
 	if ps.isInitialized() {
 		ps.clearMeta(kvWB, raftWB)
 		ps.clearExtraData(snapData.Region)
 	}
-	
-	result := ApplySnapResult {
+
+	result := ApplySnapResult{
 		PrevRegion: ps.region,
 		Region:     snapData.Region,
 	}
 
-	ps.raftState = &rspb.RaftLocalState {
-		HardState: &eraftpb.HardState {
-			Term:  snapshot.Metadata.Term,
-			Vote:  ps.raftState.HardState.Vote,
+	ps.raftState = &rspb.RaftLocalState{
+		HardState: &eraftpb.HardState{
+			Term:   snapshot.Metadata.Term,
+			Vote:   ps.raftState.HardState.Vote,
 			Commit: snapshot.Metadata.Index,
 		},
 		LastIndex: snapshot.Metadata.Index,
 		LastTerm:  snapshot.Metadata.Term,
 	}
-	ps.applyState = &rspb.RaftApplyState {
+	ps.applyState = &rspb.RaftApplyState{
 		AppliedIndex: snapshot.Metadata.Index,
 		TruncatedState: &rspb.RaftTruncatedState{
 			Index: snapshot.Metadata.Index,
@@ -368,7 +372,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 
 	ps.snapState.StateType = snap.SnapState_Applying
 	ch := make(chan bool, 1)
-	ps.regionSched <- &runner.RegionTaskApply {
+	ps.regionSched <- &runner.RegionTaskApply{
 		RegionId: ps.region.Id,
 		Notifier: ch,
 		SnapMeta: snapshot.Metadata,

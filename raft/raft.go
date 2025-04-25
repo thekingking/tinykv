@@ -159,7 +159,7 @@ type Raft struct {
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
 
-	heartbeatResp map[uint64]bool
+	active map[uint64]bool
 }
 
 // newRaft return a raft peer with the given config
@@ -268,7 +268,8 @@ func (r *Raft) sendAppend(to uint64) bool {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	if r.RaftLog.pendingSnapshot == nil {
+	if firstIndex, _ := r.RaftLog.storage.FirstIndex(); r.RaftLog.pendingSnapshot == nil || firstIndex > r.RaftLog.pendingSnapshot.Metadata.Index+1 {
+		r.RaftLog.pendingSnapshot = nil
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			return
@@ -380,13 +381,15 @@ func (r *Raft) tick() {
 		// 若有一半以上的节点返回了心跳响应，则可以认为该节点继续当选Leader
 		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
-			heartbeatNum := len(r.heartbeatResp)
-			if heartbeatNum*2 <= len(r.Prs) {
+			activeNum := len(r.active)
+			if activeNum*2 <= len(r.Prs) {
 				// logd.Infof("leader %d lost heartbeat from %d nodes, start election", r.id, len(r.Prs) - heartbeatNum)
-				r.startTimeoutNow()
+				r.becomeFollower(r.Term, None)
+				r.RaftLog.pendingSnapshot = nil
 				return
 			}
-			r.heartbeatResp = make(map[uint64]bool)
+			r.active = make(map[uint64]bool)
+			r.active[r.id] = true
 		}
 		r.heartbeatElapsed++
 		if r.heartbeatElapsed >= r.heartbeatTimeout {
@@ -432,7 +435,8 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
-	r.heartbeatResp = make(map[uint64]bool)
+	r.active = make(map[uint64]bool)
+	r.active[r.id] = true
 
 	// 初始化所有节点的进度
 	for id := range r.Prs {
@@ -450,7 +454,7 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
-	// logd.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
+	// log.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
 	switch r.State {
 	case StateFollower:
 		r.FollowerStep(m)
@@ -536,6 +540,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 		return r.handlePropose(m)
 	case pb.MessageType_MsgAppend:
 		if m.Term > r.Term {
+			r.RaftLog.pendingSnapshot = nil
 			r.handleAppendEntries(m)
 		}
 	case pb.MessageType_MsgAppendResponse:
@@ -543,6 +548,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgRequestVote:
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, None)
+			r.RaftLog.pendingSnapshot = nil
 			r.handleRequestVote(m)
 		} else {
 			r.sendRequestVoteResponse(m.From, true)
@@ -553,6 +559,7 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgHeartbeat:
 		if m.Term > r.Term {
 			r.becomeFollower(m.Term, m.From)
+			r.RaftLog.pendingSnapshot = nil
 			r.handleHeartbeat(m)
 		}
 	case pb.MessageType_MsgHeartbeatResponse:
@@ -586,7 +593,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	if m.Term < r.Term {
 		return
 	}
-	r.heartbeatResp[m.From] = true
+	r.active[m.From] = true
 	if m.Reject {
 		r.Prs[m.From].Next = m.Commit + 1
 		r.sendAppend(m.From)
@@ -627,7 +634,7 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 	if m.Term < r.Term {
 		return
 	}
-	r.heartbeatResp[m.From] = true
+	r.active[m.From] = true
 	if r.RaftLog.committed > m.Commit {
 		r.sendAppend(m.From)
 	}
@@ -711,8 +718,10 @@ func (r *Raft) handlePropose(m pb.Message) error {
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
 	if m.Term < r.Term {
+		r.sendAppendResponse(m.From, true)
 		return
 	}
+	// log.Infof("handleSnapshot, r.Id: %d, r.Term: %d, m.Term: %d, m.From: %d, m.Snapshot.Metadata.Index: %d, r.RaftLog.committed: %d",r.id, r.Term, m.Term, m.From, m.Snapshot.Metadata.Index, r.RaftLog.committed)
 	r.becomeFollower(m.Term, m.From)
 	reject := false
 	if m.Snapshot == nil || m.Snapshot.Metadata.Index <= r.RaftLog.committed {
@@ -727,6 +736,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		r.RaftLog.ApplySnapshot(m.Snapshot)
 	}
 	r.sendAppendResponse(m.From, reject)
+	// log.Infof("handleSnapshot over, r.id: %d, r.Term: %d, m.Term: %d, m.From: %d, m.Snapshot.Metadata.Index: %d, r.RaftLog.committed: %d",r.id, r.Term, m.Term, m.From, m.Snapshot.Metadata.Index, r.RaftLog.committed)
 }
 
 func (r *Raft) handleTimeoutNow(m pb.Message) {

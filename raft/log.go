@@ -78,7 +78,7 @@ func newLog(storage Storage) *RaftLog {
 // grow unlimitedly in memory
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
-	if FirstIndex, _ := l.storage.FirstIndex(); l.FirstIndex() > FirstIndex {
+	if FirstIndex, _ := l.storage.FirstIndex(); l.FirstIndex() < FirstIndex {
 		if l.LastIndex() <= FirstIndex {
 			l.entries = l.entries[:1]
 			l.entries[0].Index = FirstIndex - 1
@@ -180,7 +180,7 @@ func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
 
 func (l *RaftLog) ApplySnapshot(snap *pb.Snapshot) {
 	l.pendingSnapshot = snap
-	
+
 	l.entries = make([]pb.Entry, 1)
 	l.entries[0].Index = snap.Metadata.Index
 	l.entries[0].Term = snap.Metadata.Term
