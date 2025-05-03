@@ -64,6 +64,7 @@ func newLog(storage Storage) *RaftLog {
 	lastIndex, _ := storage.LastIndex()
 	ents, _ := storage.Entries(firstIndex, lastIndex+1)
 	entries = append(entries, ents...)
+	// log.Infof("newLog: firstIndex %d, lastIndex %d, len: %d", firstIndex, lastIndex, len(entries))
 	return &RaftLog{
 		storage:   storage,
 		stabled:   lastIndex,
@@ -79,13 +80,8 @@ func newLog(storage Storage) *RaftLog {
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 	if FirstIndex, _ := l.storage.FirstIndex(); l.FirstIndex() < FirstIndex {
-		if l.LastIndex() <= FirstIndex {
-			l.entries = l.entries[:1]
-			l.entries[0].Index = FirstIndex - 1
-			l.entries[0].Term, _ = l.storage.Term(FirstIndex - 1)
-		} else {
-			l.entries = l.entries[FirstIndex-l.entries[0].Index:]
-		}
+		l.entries = l.entries[FirstIndex-l.entries[0].Index:]
+		l.pendingSnapshot = nil
 	}
 }
 
@@ -98,9 +94,11 @@ func (l *RaftLog) allEntries() []pb.Entry {
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	firstIndex := l.entries[0].Index
-	offset := l.stabled - firstIndex + 1
-	return l.entries[offset:]
+	offset := l.entries[0].Index
+	// if l.stabled + 1 - offset > uint64(len(l.entries)) {
+	// 	log.Infof("unstableEntries: stabled %d, offset %d, len %d", l.stabled, offset, len(l.entries))
+	// }
+	return l.entries[l.stabled+1-offset:]
 }
 
 // nextEnts returns all the committed but not applied entries
@@ -188,4 +186,6 @@ func (l *RaftLog) ApplySnapshot(snap *pb.Snapshot) {
 	l.applied = snap.Metadata.Index
 	l.committed = snap.Metadata.Index
 	l.stabled = snap.Metadata.Index
+
+	// log.Infof("apply snapshot: index %d, term %d", snap.Metadata.Index, snap.Metadata.Term)
 }

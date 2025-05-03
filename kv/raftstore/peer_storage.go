@@ -329,14 +329,10 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 
 // Apply the peer with given snapshot
 func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_util.WriteBatch, raftWB *engine_util.WriteBatch) (*ApplySnapResult, error) {
-	log.Infof("%v begin to apply snapshot", ps.Tag)
+	log.Infof("%s applying snapshot, index: %d, term: %d", ps.Tag, snapshot.Metadata.Index, snapshot.Metadata.Term)
 	snapData := new(rspb.RaftSnapshotData)
 	if err := snapData.Unmarshal(snapshot.Data); err != nil {
 		return nil, err
-	}
-
-	if !ps.validateSnap(snapshot) {
-		return nil, nil
 	}
 
 	if ps.isInitialized() {
@@ -393,15 +389,16 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	kvWB := new(engine_util.WriteBatch)
 	raftWB := new(engine_util.WriteBatch)
 	var result *ApplySnapResult
-	if !raft.IsEmptySnap(&ready.Snapshot) {
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &ready.HardState
+	}
+	if !raft.IsEmptySnap(&ready.Snapshot) && ps.validateSnap(&ready.Snapshot) {
 		var err error
 		result, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
 		if err != nil {
+			// log.Infof("%s failed to apply snapshot, err: %v", ps.Tag, err)
 			return nil, err
 		}
-	}
-	if !raft.IsEmptyHardState(ready.HardState) {
-		ps.raftState.HardState = &ready.HardState
 	}
 	ps.Append(ready.Entries, raftWB)
 

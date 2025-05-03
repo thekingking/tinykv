@@ -15,6 +15,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"github.com/pingcap-incubator/tinykv/scheduler/pkg/btree"
 	"github.com/pingcap/errors"
 )
@@ -47,48 +48,79 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	if !d.RaftGroup.HasReady() {
 		return
 	}
-	// log.Infof("%s handle raft ready", d.Tag)
 	ready := d.RaftGroup.Ready()
+	// log.Infof("%s handle raft ready %s, commited: %d , entries: %d", d.Tag, ready.String(), len(ready.CommittedEntries), len(ready.Entries))
 
 	d.Send(d.ctx.trans, ready.Messages)
-	if len(ready.CommittedEntries) > 0 {
-		for _, entry := range ready.CommittedEntries {
-			d.apply(entry)
-		}
-	}
+	d.apply(&ready)
 	d.peerStorage.SaveReadyState(&ready)
 	d.RaftGroup.Advance(ready)
 }
 
-func (d *peerMsgHandler) apply(entry eraftpb.Entry) {
-	// log.Infof("leader: %d, Term: %d, %s apply raft entry %s",d.LeaderId(), d.Term(), d.Tag, entry.String())
-	resp := d.newCmdResp(entry)
-	for len(d.proposals) > 0 {
-		// log.Infof("%s response", d.Tag)
-		p := d.proposals[0]
-		if entry.Index < p.index {
-			return
+func (d *peerMsgHandler) apply(ready *raft.Ready) {
+	if len(ready.CommittedEntries) > 0 {
+		for _, entry := range ready.CommittedEntries {
+			resp := d.newCmdResp(entry)
+			d.doResp(resp, &entry)
 		}
-		if entry.Index > p.index {
-			// log.Infof("%s stale command %d, %d", d.Tag, entry.Index, p.index)
-			p.cb.Done(ErrRespStaleCommand(p.term))
-			d.proposals = d.proposals[1:]
-			continue
-		}
-		if entry.Term < p.term {
-			return
-		}
-		if entry.Term > p.term {
-			// log.Infof("%s stale command %d, %d", d.Tag, entry.Term, p.term)
-			p.cb.Done(ErrRespStaleCommand(p.term))
-			d.proposals = d.proposals[1:]
-			continue
-		}
-		d.proposals = d.proposals[1:]
-		// log.Infof("%s command %d, %d", d.Tag, entry.Index, p.index)
-		p.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-		p.cb.Done(resp)
 	}
+}
+
+func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) {
+	if req == nil {
+		return
+	}
+	switch req.CmdType {
+	case raft_cmdpb.AdminCmdType_CompactLog:
+		compactLogReq := req.CompactLog
+		if compactLogReq.CompactIndex > d.LastCompactedIdx && compactLogReq.CompactIndex > d.peerStorage.truncatedIndex() {
+			d.ScheduleCompactLog(compactLogReq.CompactIndex)
+			d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
+			d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
+			// log.Infof("%s compact log to %d", d.Tag, compactLogReq.CompactIndex)
+		}
+	case raft_cmdpb.AdminCmdType_Split:
+	case raft_cmdpb.AdminCmdType_TransferLeader:
+	case raft_cmdpb.AdminCmdType_ChangePeer:
+	case raft_cmdpb.AdminCmdType_InvalidAdmin:
+	}
+}
+
+func (d *peerMsgHandler) handleReq(req *raft_cmdpb.Request) (*raft_cmdpb.Response, error) {
+	if req == nil {
+		return nil, nil
+	}
+	resp := &raft_cmdpb.Response{
+		CmdType: req.CmdType,
+	}
+	switch req.CmdType {
+	case raft_cmdpb.CmdType_Get:
+		val, err := engine_util.GetCF(d.ctx.engine.Kv, req.Get.Cf, req.Get.Key)
+		if err != nil {
+			log.Errorf("%s get error %v", d.Tag, err)
+			return nil, err
+		}
+		resp.Get = &raft_cmdpb.GetResponse{Value: val}
+	case raft_cmdpb.CmdType_Put:
+		err := engine_util.PutCF(d.ctx.engine.Kv, req.Put.Cf, req.Put.Key, req.Put.Value)
+		if err != nil {
+			log.Errorf("%s put error %v", d.Tag, err)
+			return nil, err
+		}
+		resp.Put = &raft_cmdpb.PutResponse{}
+	case raft_cmdpb.CmdType_Delete:
+		err := engine_util.DeleteCF(d.ctx.engine.Kv, req.Delete.Cf, req.Delete.Key)
+		if err != nil {
+			log.Errorf("%s delete error %v", d.Tag, err)
+			return nil, err
+		}
+		resp.Delete = &raft_cmdpb.DeleteResponse{}
+	case raft_cmdpb.CmdType_Snap:
+		resp.Snap = &raft_cmdpb.SnapResponse{
+			Region: d.Region(),
+		}
+	}
+	return resp, nil
 }
 
 func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResponse {
@@ -98,56 +130,46 @@ func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResp
 		log.Infof("%s unmarshal raft command error %v", d.Tag, err)
 		return ErrResp(err)
 	}
-	if cmd_req.AdminRequest != nil {
-		switch cmd_req.AdminRequest.CmdType {
-		case raft_cmdpb.AdminCmdType_CompactLog:
-			compactLogReq := cmd_req.AdminRequest.CompactLog
-			d.ScheduleCompactLog(compactLogReq.CompactIndex)
-			d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
-			d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
-		case raft_cmdpb.AdminCmdType_Split:
-		case raft_cmdpb.AdminCmdType_TransferLeader:
-		case raft_cmdpb.AdminCmdType_ChangePeer:
-		case raft_cmdpb.AdminCmdType_InvalidAdmin:
-		}
-	}
+	d.handleAdminReq(cmd_req.AdminRequest)
 	for _, req := range cmd_req.Requests {
-		resp := &raft_cmdpb.Response{
-			CmdType: req.CmdType,
+		resp, err := d.handleReq(req)
+		if err != nil {
+			return ErrResp(err)
 		}
-		switch req.CmdType {
-		case raft_cmdpb.CmdType_Get:
-			val, err := engine_util.GetCF(d.ctx.engine.Kv, req.Get.Cf, req.Get.Key)
-			if err != nil {
-				log.Errorf("%s get error %v", d.Tag, err)
-				return ErrResp(err)
-			}
-			resp.Get = &raft_cmdpb.GetResponse{Value: val}
-		case raft_cmdpb.CmdType_Put:
-			err := engine_util.PutCF(d.ctx.engine.Kv, req.Put.Cf, req.Put.Key, req.Put.Value)
-			if err != nil {
-				log.Errorf("%s put error %v", d.Tag, err)
-				return ErrResp(err)
-			}
-			resp.Put = &raft_cmdpb.PutResponse{}
-		case raft_cmdpb.CmdType_Delete:
-			err := engine_util.DeleteCF(d.ctx.engine.Kv, req.Delete.Cf, req.Delete.Key)
-			if err != nil {
-				log.Errorf("%s delete error %v", d.Tag, err)
-				return ErrResp(err)
-			}
-			resp.Delete = &raft_cmdpb.DeleteResponse{}
-		case raft_cmdpb.CmdType_Snap:
-			resp.Snap = &raft_cmdpb.SnapResponse{
-				Region: d.Region(),
-			}
+		if resp != nil {
+			cmd_resp.Responses = append(cmd_resp.Responses, resp)
 		}
-		cmd_resp.Responses = append(cmd_resp.Responses, resp)
 	}
 	cmd_resp.Header = &raft_cmdpb.RaftResponseHeader{
 		CurrentTerm: d.Term(),
 	}
 	return &cmd_resp
+}
+
+func (d *peerMsgHandler) doResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
+	for len(d.proposals) > 0 {
+		// log.Infof("%s response", d.Tag)
+		p := d.proposals[0]
+		if entry.Index < p.index {
+			return
+		}
+		if entry.Index > p.index {
+			p.cb.Done(ErrRespStaleCommand(p.term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+		if entry.Term < p.term {
+			return
+		}
+		if entry.Term > p.term {
+			p.cb.Done(ErrRespStaleCommand(p.term))
+			d.proposals = d.proposals[1:]
+			continue
+		}
+		d.proposals = d.proposals[1:]
+		p.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+		p.cb.Done(resp)
+	}
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {

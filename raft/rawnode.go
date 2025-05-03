@@ -192,7 +192,7 @@ func (rn *RawNode) Advance(rd Ready) {
 	if !IsEmptyHardState(rd.HardState) {
 		rn.hardState = rd.HardState
 	}
-	if rn.Raft.State != StateLeader && !IsEmptySnap(&rd.Snapshot) {
+	if !IsEmptySnap(&rd.Snapshot) {
 		rn.Raft.RaftLog.pendingSnapshot = nil
 	}
 }

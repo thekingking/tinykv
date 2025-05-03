@@ -286,7 +286,7 @@ func NewLogger(prefix string) *Logger {
 	} else {
 		level = LOG_LEVEL_INFO
 	}
-	logPath := "/root/work/tinykv/test.log"
+	logPath := "/home/akin/work/tinykv/test.log"
 	file, err := os.OpenFile(logPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0666)
 	if err != nil {
 		log.Fatalf("无法打开文件: %v", err)

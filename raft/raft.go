@@ -17,7 +17,7 @@ package raft
 import (
 	"errors"
 
-	// "github.com/pingcap-incubator/tinykv/log"
+	// logd "github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -172,6 +172,7 @@ func newRaft(c *Config) *Raft {
 	log := newLog(c.Storage)
 	log.committed = max(log.committed, hardState.Commit)
 	log.applied = max(log.applied, c.Applied)
+	// logd.Infof("raft: newRaft, committed: %d, applied: %d", log.committed, log.applied)
 
 	var prs map[uint64]*Progress
 	if c.peers != nil {
@@ -268,8 +269,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 }
 
 func (r *Raft) sendSnapshot(to uint64) {
-	if firstIndex, _ := r.RaftLog.storage.FirstIndex(); r.RaftLog.pendingSnapshot == nil || firstIndex > r.RaftLog.pendingSnapshot.Metadata.Index+1 {
-		r.RaftLog.pendingSnapshot = nil
+	if r.RaftLog.pendingSnapshot == nil {
 		snapshot, err := r.RaftLog.storage.Snapshot()
 		if err != nil {
 			return
@@ -281,6 +281,7 @@ func (r *Raft) sendSnapshot(to uint64) {
 		Term:     r.Term,
 		From:     r.id,
 		To:       to,
+		Index:    r.RaftLog.LastIndex(),
 		Snapshot: r.RaftLog.pendingSnapshot,
 	})
 }
@@ -367,7 +368,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 func (r *Raft) tick() {
 	r.electionElapsed++
 	r.RaftLog.maybeCompact()
-	// log.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.election: %d, tick: %d, r.heartbeat: %d, r.heartelpased: %d, LastIndex: %d, Commited: %d, Applied: %d", r.id, r.Term, r.Lead, r.electionTimeout, r.electionElapsed, r.heartbeatTimeout, r.heartbeatElapsed, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
+	// logd.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.election: %d, tick: %d, r.heartbeat: %d, r.heartelpased: %d, FirstIndex: %d, LastIndex: %d, Commited: %d, Applied: %d", r.id, r.Term, r.Lead, r.electionTimeout, r.electionElapsed, r.heartbeatTimeout, r.heartbeatElapsed, r.RaftLog.FirstIndex(), r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.applied)
 	switch r.State {
 	case StateFollower:
 		if r.electionElapsed >= r.electionTimeout {
@@ -454,7 +455,8 @@ func (r *Raft) becomeLeader() {
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
-	// log.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
+	// logd.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, FirstIndex: %d, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.FirstIndex(), r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
+	// logd.Infof("Step %s, From: %d, To: %d, Term: %d, Index: %d, LogTerm: %d, Commit: %d", m.MsgType, m.From, m.To, m.Term, m.Index, m.LogTerm, m.Commit)
 	switch r.State {
 	case StateFollower:
 		r.FollowerStep(m)
@@ -596,6 +598,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	r.active[m.From] = true
 	if m.Reject {
 		r.Prs[m.From].Next = m.Commit + 1
+		r.Prs[m.From].Match = m.Commit
 		r.sendAppend(m.From)
 	} else {
 		r.Prs[m.From].Next = m.Index + 1
@@ -734,6 +737,9 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 			}
 		}
 		r.RaftLog.ApplySnapshot(m.Snapshot)
+		if r.RaftLog.LastIndex() < m.Index {
+			reject = true
+		}
 	}
 	r.sendAppendResponse(m.From, reject)
 	// log.Infof("handleSnapshot over, r.id: %d, r.Term: %d, m.Term: %d, m.From: %d, m.Snapshot.Metadata.Index: %d, r.RaftLog.committed: %d",r.id, r.Term, m.Term, m.From, m.Snapshot.Metadata.Index, r.RaftLog.committed)
