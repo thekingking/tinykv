@@ -88,28 +88,35 @@ func (txn *MvccTxn) DeleteLock(key []byte) {
 // GetValue finds the value for key, valid at the start timestamp of this transaction.
 // I.e., the most recent value committed before the start of this transaction.
 func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
-	// 从Write中查找小于startTs的最新的write，用write的startTs去Value中查找数据
+	// Seek to the first key >= EncodeKey(key, txn.StartTS)
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
 	defer iter.Close()
-	for iter.Seek(EncodeKey(key, txn.StartTS)); iter.Valid(); iter.Next() {
-		item := iter.Item()
-		keyBytes := item.Key()
-		userKey := DecodeUserKey(keyBytes)
-		if !bytes.Equal(key, userKey) {
-			continue
-		}
-		writeBytes, err := item.Value()
-		if err != nil {
-			return nil, err
-		}
-		write, err := ParseWrite(writeBytes)
-		if err != nil || write == nil {
-			break
-		}
-		startTs := write.StartTS
-		return txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, startTs))
+	iter.Seek(EncodeKey(key, txn.StartTS))
+	if !iter.Valid() {
+		return nil, nil
 	}
-	return nil, nil
+
+	// Check if the key is the one we are looking for
+	item := iter.Item()
+	keyBytes := item.Key()
+	userKey := DecodeUserKey(keyBytes)
+	if !bytes.Equal(key, userKey) {
+		return nil, nil
+	}
+
+	// Check if the write is valid for this transaction
+	writeBytes, err := item.Value()
+	if err != nil {
+		return nil, err
+	}
+	write, err := ParseWrite(writeBytes)
+	if err != nil || write == nil {
+		return nil, err
+	}
+
+	// search the value in the default CF
+	startTs := write.StartTS
+	return txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, startTs))
 }
 
 // PutValue adds a key/value write to this transaction.
@@ -146,7 +153,7 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 		keyBytes := item.Key()
 		userKey := DecodeUserKey(keyBytes)
 		if !bytes.Equal(key, userKey) {
-			continue
+			break
 		}
 		writeBytes, err := item.Value()
 		if err != nil {
