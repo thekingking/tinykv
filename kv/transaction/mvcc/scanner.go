@@ -23,7 +23,7 @@ type Scanner struct {
 func NewScanner(startKey []byte, txn *MvccTxn) *Scanner {
 	// Your Code Here (4C).
 	iter := txn.Reader.IterCF(engine_util.CfWrite)
-	iter.Seek(startKey)
+	iter.Seek(EncodeKey(startKey, txn.StartTS))
 	return &Scanner{
 		iter: iter,
 		txn:  txn,
