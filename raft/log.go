@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -64,7 +63,6 @@ func newLog(storage Storage) *RaftLog {
 	lastIndex, _ := storage.LastIndex()
 	ents, _ := storage.Entries(firstIndex, lastIndex+1)
 	entries = append(entries, ents...)
-	// log.Infof("newLog: firstIndex %d, lastIndex %d, len: %d", firstIndex, lastIndex, len(entries))
 	return &RaftLog{
 		storage:   storage,
 		stabled:   lastIndex,
@@ -162,9 +160,6 @@ func (l *RaftLog) Entries(lo, hi uint64) ([]*pb.Entry, error) {
 	if lo <= offset {
 		return nil, ErrCompacted
 	}
-	if hi > l.LastIndex()+1 {
-		log.Panicf("entries' hi(%d) is out of bound lastindex(%d)", hi, l.LastIndex())
-	}
 	if len(l.entries) == 1 && lo < hi {
 		return nil, ErrUnavailable
 	}
@@ -186,6 +181,4 @@ func (l *RaftLog) ApplySnapshot(snap *pb.Snapshot) {
 	l.applied = snap.Metadata.Index
 	l.committed = snap.Metadata.Index
 	l.stabled = snap.Metadata.Index
-
-	// log.Infof("apply snapshot: index %d, term %d", snap.Metadata.Index, snap.Metadata.Term)
 }

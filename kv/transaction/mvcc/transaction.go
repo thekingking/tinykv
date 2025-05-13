@@ -110,7 +110,7 @@ func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 		return nil, err
 	}
 	write, err := ParseWrite(writeBytes)
-	if err != nil || write == nil {
+	if err != nil || write == nil || write.Kind != WriteKindPut {
 		return nil, err
 	}
 

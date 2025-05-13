@@ -77,7 +77,6 @@ func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) {
 			d.ScheduleCompactLog(compactLogReq.CompactIndex)
 			d.peerStorage.applyState.TruncatedState.Index = compactLogReq.CompactIndex
 			d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
-			// log.Infof("%s compact log to %d", d.Tag, compactLogReq.CompactIndex)
 		}
 	case raft_cmdpb.AdminCmdType_Split:
 	case raft_cmdpb.AdminCmdType_TransferLeader:
@@ -250,19 +249,19 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		}
 		return
 	}
+	if cb != nil {
+		d.proposals = append(d.proposals, &proposal{
+			index: d.nextProposalIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
+	}
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
 		if cb != nil {
 			cb.Done(ErrResp(err))
 		}
 		return
-	}
-	if cb != nil {
-		d.proposals = append(d.proposals, &proposal{
-			index: d.RaftGroup.Raft.RaftLog.LastIndex(),
-			term:  d.RaftGroup.Raft.Term,
-			cb:    cb,
-		})
 	}
 }
 

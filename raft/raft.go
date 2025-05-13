@@ -742,7 +742,6 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 		}
 	}
 	r.sendAppendResponse(m.From, reject)
-	// log.Infof("handleSnapshot over, r.id: %d, r.Term: %d, m.Term: %d, m.From: %d, m.Snapshot.Metadata.Index: %d, r.RaftLog.committed: %d",r.id, r.Term, m.Term, m.From, m.Snapshot.Metadata.Index, r.RaftLog.committed)
 }
 
 func (r *Raft) handleTimeoutNow(m pb.Message) {
