@@ -217,6 +217,7 @@ func (r *Raft) GetHardState() pb.HardState {
 		Commit: r.RaftLog.committed,
 	}
 }
+
 /*===================================== End：状态判定 ====================================*/
 
 /*===================================== Start：发起动作 ====================================*/
@@ -244,6 +245,7 @@ func (r *Raft) startTimeoutNow() {
 		MsgType: pb.MessageType_MsgTimeoutNow,
 	})
 }
+
 /*===================================== End：发起动作 ====================================*/
 
 /*===================================== Start：发送消息 ====================================*/
@@ -369,6 +371,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 		Commit:  r.RaftLog.committed,
 	})
 }
+
 /*===================================== End：发送消息 ====================================*/
 
 // tick advances the internal logical clock by a single tick.
