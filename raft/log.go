@@ -55,14 +55,18 @@ type RaftLog struct {
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
-	entries := make([]pb.Entry, 1)
+	// 获取storage信息
 	firstIndex, _ := storage.FirstIndex()
+	lastIndex, _ := storage.LastIndex()
 	term, _ := storage.Term(firstIndex - 1)
+
+	// 根据storage中内容创建entries，第0个元素是dummy entry
+	entries := make([]pb.Entry, 1)
 	entries[0].Index = firstIndex - 1
 	entries[0].Term = term
-	lastIndex, _ := storage.LastIndex()
 	ents, _ := storage.Entries(firstIndex, lastIndex+1)
 	entries = append(entries, ents...)
+
 	return &RaftLog{
 		storage:   storage,
 		stabled:   lastIndex,
@@ -78,7 +82,7 @@ func newLog(storage Storage) *RaftLog {
 func (l *RaftLog) maybeCompact() {
 	// Your Code Here (2C).
 	if FirstIndex, _ := l.storage.FirstIndex(); l.FirstIndex() < FirstIndex {
-		l.entries = l.entries[FirstIndex-l.entries[0].Index:]
+		l.entries = l.entries[FirstIndex-l.FirstIndex():]
 		l.pendingSnapshot = nil
 	}
 }
@@ -93,17 +97,11 @@ func (l *RaftLog) allEntries() []pb.Entry {
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
 	offset := l.entries[0].Index
-	// if l.stabled + 1 - offset > uint64(len(l.entries)) {
-	// 	log.Infof("unstableEntries: stabled %d, offset %d, len %d", l.stabled, offset, len(l.entries))
-	// }
 	return l.entries[l.stabled+1-offset:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
-	if len(l.entries) == 0 {
-		return l.entries
-	}
 	offset := l.entries[0].Index
 	lo := l.applied + 1 - offset
 	hi := l.committed + 1 - offset
@@ -135,6 +133,7 @@ func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
 	if term, err := l.Term(preIndex); err != nil || term != preTerm {
 		return false
 	}
+	// 去除重复项
 	offset := l.entries[0].Index
 	for len(entries) > 0 {
 		firstIndex := entries[0].Index
@@ -146,6 +145,7 @@ func (l *RaftLog) Append(preIndex, preTerm uint64, entries []*pb.Entry) bool {
 	if len(entries) == 0 {
 		return true
 	}
+	// 更新stabled，添加新的entries
 	l.entries = l.entries[:entries[0].Index-offset]
 	l.stabled = min(l.stabled, l.LastIndex())
 	for len(entries) > 0 {

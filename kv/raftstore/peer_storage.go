@@ -329,7 +329,6 @@ func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.Write
 
 // Apply the peer with given snapshot
 func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_util.WriteBatch, raftWB *engine_util.WriteBatch) (*ApplySnapResult, error) {
-	log.Infof("%s applying snapshot, index: %d, term: %d", ps.Tag, snapshot.Metadata.Index, snapshot.Metadata.Term)
 	snapData := new(rspb.RaftSnapshotData)
 	if err := snapData.Unmarshal(snapshot.Data); err != nil {
 		return nil, err
@@ -392,22 +391,22 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &ready.HardState
 	}
-	if !raft.IsEmptySnap(&ready.Snapshot) && ps.validateSnap(&ready.Snapshot) {
-		var err error
-		result, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
-		if err != nil {
-			// log.Infof("%s failed to apply snapshot, err: %v", ps.Tag, err)
-			return nil, err
-		}
-	}
-	ps.Append(ready.Entries, raftWB)
-
 	if len(ready.CommittedEntries) > 0 {
 		ps.applyState.AppliedIndex = ready.CommittedEntries[len(ready.CommittedEntries)-1].Index
 	}
 
-	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
-	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	ps.Append(ready.Entries, raftWB)
+	
+	if !raft.IsEmptySnap(&ready.Snapshot) {
+		var err error
+		result, err = ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+		kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+	}
 
 	raftWB.WriteToDB(ps.Engines.Raft)
 	kvWB.WriteToDB(ps.Engines.Kv)

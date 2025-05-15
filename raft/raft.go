@@ -168,12 +168,13 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 
+	// 初始化RaffLog
 	hardState, confState, _ := c.Storage.InitialState()
 	log := newLog(c.Storage)
 	log.committed = max(log.committed, hardState.Commit)
 	log.applied = max(log.applied, c.Applied)
-	// logd.Infof("raft: newRaft, committed: %d, applied: %d", log.committed, log.applied)
 
+	// 初始化Prs
 	var prs map[uint64]*Progress
 	if c.peers != nil {
 		prs = make(map[uint64]*Progress, len(c.peers))
@@ -201,6 +202,7 @@ func newRaft(c *Config) *Raft {
 	}
 }
 
+/*===================================== Start：状态判定 ====================================*/
 func (r *Raft) getSoftState() SoftState {
 	return SoftState{
 		Lead:      r.Lead,
@@ -215,7 +217,9 @@ func (r *Raft) GetHardState() pb.HardState {
 		Commit: r.RaftLog.committed,
 	}
 }
+/*===================================== End：状态判定 ====================================*/
 
+/*===================================== Start：发起动作 ====================================*/
 func (r *Raft) startElection() {
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgHup,
@@ -240,7 +244,9 @@ func (r *Raft) startTimeoutNow() {
 		MsgType: pb.MessageType_MsgTimeoutNow,
 	})
 }
+/*===================================== End：发起动作 ====================================*/
 
+/*===================================== Start：发送消息 ====================================*/
 // sendAppend sends an append RPC with new entries (if any) and the
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
@@ -363,6 +369,7 @@ func (r *Raft) sendAppendResponse(to uint64, reject bool) {
 		Commit:  r.RaftLog.committed,
 	})
 }
+/*===================================== End：发送消息 ====================================*/
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
@@ -383,8 +390,8 @@ func (r *Raft) tick() {
 		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
 			activeNum := len(r.active)
+			// 自动退选
 			if activeNum*2 <= len(r.Prs) {
-				// logd.Infof("leader %d lost heartbeat from %d nodes, start election", r.id, len(r.Prs) - heartbeatNum)
 				r.becomeFollower(r.Term, None)
 				r.RaftLog.pendingSnapshot = nil
 				return
@@ -420,9 +427,11 @@ func (r *Raft) becomeCandidate() {
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
 
+	// 向自己投票
 	r.votes = make(map[uint64]bool)
 	r.votes[r.id] = true
 
+	// 只有一个节点，自动当选
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
 		return
@@ -479,17 +488,11 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgRequestVote:
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, None)
-		}
 		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, m.From)
-		}
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
@@ -510,20 +513,12 @@ func (r *Raft) CandidateStep(m pb.Message) error {
 		r.handleAppendEntries(m)
 	case pb.MessageType_MsgAppendResponse:
 	case pb.MessageType_MsgRequestVote:
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, None)
-			r.handleRequestVote(m)
-		} else {
-			r.sendRequestVoteResponse(m.From, true)
-		}
+		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 		r.handleRequestVoteResponse(m)
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
-		if m.Term >= r.Term {
-			r.becomeFollower(m.Term, m.From)
-		}
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
@@ -541,29 +536,16 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgPropose:
 		return r.handlePropose(m)
 	case pb.MessageType_MsgAppend:
-		if m.Term > r.Term {
-			r.RaftLog.pendingSnapshot = nil
-			r.handleAppendEntries(m)
-		}
+		r.handleAppendEntries(m)
 	case pb.MessageType_MsgAppendResponse:
 		r.handleAppendResponse(m)
 	case pb.MessageType_MsgRequestVote:
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, None)
-			r.RaftLog.pendingSnapshot = nil
-			r.handleRequestVote(m)
-		} else {
-			r.sendRequestVoteResponse(m.From, true)
-		}
+		r.handleRequestVote(m)
 	case pb.MessageType_MsgRequestVoteResponse:
 	case pb.MessageType_MsgSnapshot:
 		r.handleSnapshot(m)
 	case pb.MessageType_MsgHeartbeat:
-		if m.Term > r.Term {
-			r.becomeFollower(m.Term, m.From)
-			r.RaftLog.pendingSnapshot = nil
-			r.handleHeartbeat(m)
-		}
+		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
 	case pb.MessageType_MsgTransferLeader:
@@ -575,9 +557,12 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
-	if m.Term < r.Term {
+	if m.Term < r.Term || r.State == StateLeader && m.Term == r.Term {
 		r.sendAppendResponse(m.From, true)
 		return
+	}
+	if r.State == StateLeader {
+		r.RaftLog.pendingSnapshot = nil
 	}
 	r.becomeFollower(m.Term, m.From)
 	reject := !r.RaftLog.Append(m.Index, m.LogTerm, m.Entries)
@@ -595,6 +580,12 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	if m.Term < r.Term {
 		return
 	}
+	// 存在更高的term，转为follower，比如有节点被隔离太久，term较大，这时候需要重新选举来同步term
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		r.RaftLog.pendingSnapshot = nil
+		return
+	}
 	r.active[m.From] = true
 	if m.Reject {
 		r.Prs[m.From].Next = m.Commit + 1
@@ -603,10 +594,9 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 	} else {
 		r.Prs[m.From].Next = m.Index + 1
 		r.Prs[m.From].Match = r.Prs[m.From].Next - 1
-		// 差分数组
+		// 差分数组求commit的Index位置
 		if term, _ := r.RaftLog.Term(m.Index); term == r.Term && m.Index > r.RaftLog.committed {
 			arr := make([]uint64, r.Prs[r.id].Next-r.RaftLog.committed)
-			// logd.Infof("len(arr): %d, r.Prs[r.id].Next: %d, r.RaftLog.committed: %d", len(arr), r.Prs[r.id].Next, r.RaftLog.committed)
 			for _, p := range r.Prs {
 				if p.Match >= r.RaftLog.committed {
 					arr[p.Match-r.RaftLog.committed]++
@@ -615,6 +605,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 			for i, n := len(arr)-1, 0; i > 0; i-- {
 				n += int(arr[i])
 				if n > len(r.Prs)/2 {
+					// 找到第一个大于一半的index，更新commit，发送Append
 					r.RaftLog.committed = r.RaftLog.committed + uint64(i)
 					r.sendAllAppend()
 					break
@@ -626,15 +617,25 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
-	if m.Term < r.Term {
+	if m.Term < r.Term || r.State == StateLeader && m.Term == r.Term {
+		r.sendHeartbeatResponse(m.From)
 		return
 	}
-	r.electionElapsed = 0
+	if r.State == StateLeader {
+		r.RaftLog.pendingSnapshot = nil
+	}
+	r.becomeFollower(m.Term, m.From)
 	r.sendHeartbeatResponse(m.From)
 }
 
 func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 	if m.Term < r.Term {
+		return
+	}
+	// 存在更高的term，转为follower，比如有节点被隔离太久，term较大，这时候需要重新选举来同步term
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		r.RaftLog.pendingSnapshot = nil
 		return
 	}
 	r.active[m.From] = true
@@ -644,8 +645,12 @@ func (r *Raft) handleHeartbeatResponse(m pb.Message) {
 }
 
 func (r *Raft) handleRequestVote(m pb.Message) {
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		r.RaftLog.pendingSnapshot = nil
+	}
 	reject := true
-	if m.Term < r.Term {
+	if m.Term < r.Term || r.State != StateFollower && m.Term == r.Term {
 		reject = true
 	} else if r.Vote == m.From {
 		reject = false
@@ -665,11 +670,18 @@ func (r *Raft) handleRequestVoteResponse(m pb.Message) {
 	if m.Term < r.Term {
 		return
 	}
+	// 存在更高的term，转为follower，比如有任期更高的candidate或leader
+	if m.Term > r.Term {
+		r.becomeFollower(m.Term, None)
+		r.RaftLog.pendingSnapshot = nil
+		return
+	}
 	if _, exists := r.votes[m.From]; exists {
 		return
 	}
 	r.votes[m.From] = !m.Reject
-	if len(r.votes)*2 < len(r.Prs) {
+	// 获得过半同意便当选，获得过半拒绝便退选
+	if len(r.votes)*2 <= len(r.Prs) {
 		return
 	}
 	argNum := 0
@@ -720,11 +732,14 @@ func (r *Raft) handlePropose(m pb.Message) error {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	if m.Term < r.Term {
+	if m.Term < r.Term || r.State == StateLeader && m.Term == r.Term {
 		r.sendAppendResponse(m.From, true)
 		return
 	}
 	// log.Infof("handleSnapshot, r.Id: %d, r.Term: %d, m.Term: %d, m.From: %d, m.Snapshot.Metadata.Index: %d, r.RaftLog.committed: %d",r.id, r.Term, m.Term, m.From, m.Snapshot.Metadata.Index, r.RaftLog.committed)
+	if r.State == StateLeader {
+		r.RaftLog.pendingSnapshot = nil
+	}
 	r.becomeFollower(m.Term, m.From)
 	reject := false
 	if m.Snapshot == nil || m.Snapshot.Metadata.Index <= r.RaftLog.committed {

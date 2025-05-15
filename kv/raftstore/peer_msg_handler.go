@@ -49,8 +49,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	ready := d.RaftGroup.Ready()
-	// log.Infof("%s handle raft ready %s, commited: %d , entries: %d", d.Tag, ready.String(), len(ready.CommittedEntries), len(ready.Entries))
-
 	d.Send(d.ctx.trans, ready.Messages)
 	d.apply(&ready)
 	d.peerStorage.SaveReadyState(&ready)
@@ -147,7 +145,6 @@ func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResp
 
 func (d *peerMsgHandler) doResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {
 	for len(d.proposals) > 0 {
-		// log.Infof("%s response", d.Tag)
 		p := d.proposals[0]
 		if entry.Index < p.index {
 			return
@@ -249,19 +246,19 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		}
 		return
 	}
-	if cb != nil {
-		d.proposals = append(d.proposals, &proposal{
-			index: d.nextProposalIndex(),
-			term:  d.Term(),
-			cb:    cb,
-		})
-	}
 	err = d.RaftGroup.Propose(data)
 	if err != nil {
 		if cb != nil {
 			cb.Done(ErrResp(err))
 		}
 		return
+	}
+	if cb != nil {
+		d.proposals = append(d.proposals, &proposal{
+			index: d.RaftGroup.Raft.RaftLog.LastIndex(),
+			term:  d.Term(),
+			cb:    cb,
+		})
 	}
 }
 

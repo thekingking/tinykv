@@ -12,7 +12,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
 # 测试名称
-TEST_NAME="TestUnreliable2B"
+TEST_NAME="project2"
 TOTAL_RUNS=100
 PASSED=0
 FAILED=0
@@ -39,7 +39,7 @@ for i in $(seq 1 $TOTAL_RUNS); do
     echo -n "运行 #$i: "
 
     # 使用go test运行特定测试
-    if go test -count=1 -v ./kv/test_raftstore -run $TEST_NAME -timeout 5m > $TEMP_LOG_FILE 2>&1; then
+    if make project2 > $TEMP_LOG_FILE 2>&1; then
         echo -e "${GREEN}通过✓${NC}"
         ((PASSED++))
     else
