@@ -130,7 +130,7 @@ func isHardStateEqual(a, b pb.HardState) bool {
 	return a.Term == b.Term && a.Vote == b.Vote && a.Commit == b.Commit
 }
 
-func randElectionTimeout(min, max int) int {
-	n, _ := rand.Int(rand.Reader, big.NewInt(int64(max-min)))
-	return int(n.Int64()) + min
+func randElectionTimeout(timeout int) int {
+	n, _ := rand.Int(rand.Reader, big.NewInt(int64(timeout)))
+	return int(n.Int64()) + timeout
 }

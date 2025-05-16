@@ -160,6 +160,8 @@ type Raft struct {
 	PendingConfIndex uint64
 
 	active map[uint64]bool
+
+	electionTick int
 }
 
 // newRaft return a raft peer with the given config
@@ -196,9 +198,10 @@ func newRaft(c *Config) *Raft {
 		RaftLog:          log,
 		Prs:              prs,
 		heartbeatTimeout: c.HeartbeatTick,
-		electionTimeout:  randElectionTimeout(c.ElectionTick, 2*c.ElectionTick),
+		electionTimeout:  randElectionTimeout(c.ElectionTick),
 		heartbeatElapsed: 0,
 		electionElapsed:  0,
+		electionTick:     c.ElectionTick,
 	}
 }
 
@@ -237,12 +240,6 @@ func (r *Raft) startPropose() {
 	r.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
 		Entries: []*pb.Entry{{}},
-	})
-}
-
-func (r *Raft) startTimeoutNow() {
-	r.Step(pb.Message{
-		MsgType: pb.MessageType_MsgTimeoutNow,
 	})
 }
 
@@ -291,6 +288,24 @@ func (r *Raft) sendSnapshot(to uint64) {
 		To:       to,
 		Index:    r.RaftLog.LastIndex(),
 		Snapshot: r.RaftLog.pendingSnapshot,
+	})
+}
+
+func (r *Raft) sendTimeoutNow(to uint64) {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTimeoutNow,
+		Term:    r.Term,
+		From:    r.id,
+		To:      to,
+	})
+}
+
+func (r *Raft) sendTransferLeader() {
+	r.msgs = append(r.msgs, pb.Message{
+		MsgType: pb.MessageType_MsgTransferLeader,
+		Term:    r.Term,
+		From:    r.id,
+		To:      r.Lead,
 	})
 }
 
@@ -382,11 +397,11 @@ func (r *Raft) tick() {
 	switch r.State {
 	case StateFollower:
 		if r.electionElapsed >= r.electionTimeout {
-			r.startTimeoutNow()
+			r.startElection()
 		}
 	case StateCandidate:
 		if r.electionElapsed >= r.electionTimeout {
-			r.startTimeoutNow()
+			r.startElection()
 		}
 	case StateLeader:
 		// 若有一半以上的节点返回了心跳响应，则可以认为该节点继续当选Leader
@@ -419,6 +434,7 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	r.Lead = lead
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
+	r.leadTransferee = None
 }
 
 // becomeCandidate transform this peer's state to candidate
@@ -429,6 +445,8 @@ func (r *Raft) becomeCandidate() {
 	r.Lead = None
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
+	r.leadTransferee = None
+	r.electionTimeout = randElectionTimeout(r.electionTick)
 
 	// 向自己投票
 	r.votes = make(map[uint64]bool)
@@ -469,6 +487,12 @@ func (r *Raft) becomeLeader() {
 func (r *Raft) Step(m pb.Message) error {
 	// logd.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, FirstIndex: %d, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.FirstIndex(), r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
 	// logd.Infof("Step %s, From: %d, To: %d, Term: %d, Index: %d, LogTerm: %d, Commit: %d", m.MsgType, m.From, m.To, m.Term, m.Index, m.LogTerm, m.Commit)
+	if _, exist := r.Prs[r.id]; !exist {
+		return nil
+	}
+	if _, exist := r.Prs[m.From]; m.From != None && !exist {
+		return nil
+	}
 	switch r.State {
 	case StateFollower:
 		r.FollowerStep(m)
@@ -499,8 +523,9 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
+		r.sendTransferLeader()
 	case pb.MessageType_MsgTimeoutNow:
-		r.handleTimeoutNow(m)
+		r.startElection()
 	}
 	return nil
 }
@@ -525,8 +550,9 @@ func (r *Raft) CandidateStep(m pb.Message) error {
 		r.handleHeartbeat(m)
 	case pb.MessageType_MsgHeartbeatResponse:
 	case pb.MessageType_MsgTransferLeader:
+		r.sendTransferLeader()
 	case pb.MessageType_MsgTimeoutNow:
-		r.handleTimeoutNow(m)
+		r.startElection()
 	}
 	return nil
 }
@@ -552,8 +578,8 @@ func (r *Raft) LeaderStep(m pb.Message) error {
 	case pb.MessageType_MsgHeartbeatResponse:
 		r.handleHeartbeatResponse(m)
 	case pb.MessageType_MsgTransferLeader:
+		r.handleTransferLeader(m)
 	case pb.MessageType_MsgTimeoutNow:
-		r.handleTimeoutNow(m)
 	}
 	return nil
 }
@@ -590,6 +616,7 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		return
 	}
 	r.active[m.From] = true
+
 	if m.Reject {
 		r.Prs[m.From].Next = m.Commit + 1
 		r.Prs[m.From].Match = m.Commit
@@ -599,21 +626,10 @@ func (r *Raft) handleAppendResponse(m pb.Message) {
 		r.Prs[m.From].Match = r.Prs[m.From].Next - 1
 		// 差分数组求commit的Index位置
 		if term, _ := r.RaftLog.Term(m.Index); term == r.Term && m.Index > r.RaftLog.committed {
-			arr := make([]uint64, r.Prs[r.id].Next-r.RaftLog.committed)
-			for _, p := range r.Prs {
-				if p.Match >= r.RaftLog.committed {
-					arr[p.Match-r.RaftLog.committed]++
-				}
-			}
-			for i, n := len(arr)-1, 0; i > 0; i-- {
-				n += int(arr[i])
-				if n > len(r.Prs)/2 {
-					// 找到第一个大于一半的index，更新commit，发送Append
-					r.RaftLog.committed = r.RaftLog.committed + uint64(i)
-					r.sendAllAppend()
-					break
-				}
-			}
+			r.checkCommit()
+		}
+		if r.leadTransferee == m.From && r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+			r.sendTimeoutNow(m.From)
 		}
 	}
 }
@@ -715,7 +731,6 @@ func (r *Raft) handlePropose(m pb.Message) error {
 	for i, entry := range m.Entries {
 		entry.Index = NextIndex + uint64(i)
 		entry.Term = r.Term
-		entry.EntryType = pb.EntryType_EntryNormal
 	}
 
 	// 将新的entry写入raft log
@@ -762,17 +777,57 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	r.sendAppendResponse(m.From, reject)
 }
 
-func (r *Raft) handleTimeoutNow(m pb.Message) {
-	r.electionTimeout = randElectionTimeout(10, 20)
-	r.startElection()
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	if m.From == r.id {
+		return
+	}
+	r.leadTransferee = m.From
+	if r.Prs[m.From].Match == r.RaftLog.LastIndex() {
+		r.sendTimeoutNow(m.From)
+	} else {
+		r.sendAppend(m.From)
+	}
 }
 
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
+	if _, exist := r.Prs[id]; exist {
+		return
+	}
+	r.Prs[id] = &Progress{
+		Match: 0,
+		Next:  r.RaftLog.LastIndex() + 1,
+	}
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
+	delete(r.Prs, id)
+	if r.State == StateLeader {
+		r.checkCommit()
+	}
+}
+
+// 差分数组检测是否可以commit
+func (r *Raft) checkCommit() {
+	if _, exist := r.Prs[r.id]; !exist {
+		return
+	}
+	arr := make([]uint64, r.Prs[r.id].Next-r.RaftLog.committed)
+	for _, p := range r.Prs {
+		if p.Match >= r.RaftLog.committed {
+			arr[p.Match-r.RaftLog.committed]++
+		}
+	}
+	for i, n := len(arr)-1, 0; i > 0; i-- {
+		n += int(arr[i])
+		if n > len(r.Prs)/2 {
+			// 找到第一个大于一半的index，更新commit，发送Append
+			r.RaftLog.committed = r.RaftLog.committed + uint64(i)
+			r.sendAllAppend()
+			break
+		}
+	}
 }
