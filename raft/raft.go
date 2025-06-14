@@ -407,6 +407,7 @@ func (r *Raft) tick() {
 		// 若有一半以上的节点返回了心跳响应，则可以认为该节点继续当选Leader
 		if r.electionElapsed >= r.electionTimeout {
 			r.electionElapsed = 0
+			r.leadTransferee = None
 			activeNum := len(r.active)
 			// 自动退选
 			if activeNum*2 <= len(r.Prs) {
@@ -466,6 +467,7 @@ func (r *Raft) becomeLeader() {
 	r.Lead = r.id
 	r.heartbeatElapsed = 0
 	r.electionElapsed = 0
+	r.leadTransferee = None
 	r.active = make(map[uint64]bool)
 	r.active[r.id] = true
 
@@ -778,7 +780,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 }
 
 func (r *Raft) handleTransferLeader(m pb.Message) {
-	if m.From == r.id {
+	if m.From == r.id || r.leadTransferee == m.From {
 		return
 	}
 	r.leadTransferee = m.From
