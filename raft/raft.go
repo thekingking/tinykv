@@ -189,6 +189,7 @@ func newRaft(c *Config) *Raft {
 			prs[id] = &Progress{}
 		}
 	}
+	// logd.Infof("newRaft, id: %d, term: %d, vote: %d, committed: %d, applied: %d, peers: %v", c.ID, hardState.Term, hardState.Vote, log.committed, log.applied, prs)
 
 	return &Raft{
 		id:               c.ID,
@@ -329,7 +330,6 @@ func (r *Raft) sendHeartbeat() {
 		r.msgs = append(r.msgs, pb.Message{
 			MsgType: pb.MessageType_MsgHeartbeat,
 			Term:    r.Term,
-			Commit:  r.RaftLog.committed,
 			From:    r.id,
 			To:      id,
 		})
@@ -489,12 +489,6 @@ func (r *Raft) becomeLeader() {
 func (r *Raft) Step(m pb.Message) error {
 	// logd.Infof("r.id: %d, r.Term: %d, r.Lead: %d, r.tick: %d, Step %s, FirstIndex: %d, LastIndex: %d, Commited: %d, Stabled: %d Applied: %d", r.id, r.Term, r.Lead, r.electionElapsed, m.MsgType, r.RaftLog.FirstIndex(), r.RaftLog.LastIndex(), r.RaftLog.committed, r.RaftLog.stabled, r.RaftLog.applied)
 	// logd.Infof("Step %s, From: %d, To: %d, Term: %d, Index: %d, LogTerm: %d, Commit: %d", m.MsgType, m.From, m.To, m.Term, m.Index, m.LogTerm, m.Commit)
-	if _, exist := r.Prs[r.id]; !exist {
-		return nil
-	}
-	if _, exist := r.Prs[m.From]; m.From != None && !exist {
-		return nil
-	}
 	switch r.State {
 	case StateFollower:
 		r.FollowerStep(m)
@@ -527,7 +521,7 @@ func (r *Raft) FollowerStep(m pb.Message) error {
 	case pb.MessageType_MsgTransferLeader:
 		r.sendTransferLeader()
 	case pb.MessageType_MsgTimeoutNow:
-		r.startElection()
+		r.handleTimeoutNow()
 	}
 	return nil
 }
@@ -554,7 +548,7 @@ func (r *Raft) CandidateStep(m pb.Message) error {
 	case pb.MessageType_MsgTransferLeader:
 		r.sendTransferLeader()
 	case pb.MessageType_MsgTimeoutNow:
-		r.startElection()
+		r.handleTimeoutNow()
 	}
 	return nil
 }
@@ -780,7 +774,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 }
 
 func (r *Raft) handleTransferLeader(m pb.Message) {
-	if m.From == r.id || r.leadTransferee == m.From {
+	if _, ok := r.Prs[m.From]; !ok || m.From == r.id || r.leadTransferee == m.From {
 		return
 	}
 	r.leadTransferee = m.From
@@ -791,6 +785,13 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 	}
 }
 
+func (r *Raft) handleTimeoutNow() {
+	if _, ok := r.Prs[r.id]; !ok {
+		return
+	}
+	r.startElection()
+}
+
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
 	// Your Code Here (3A).
@@ -799,17 +800,19 @@ func (r *Raft) addNode(id uint64) {
 	}
 	r.Prs[id] = &Progress{
 		Match: 0,
-		Next:  r.RaftLog.LastIndex() + 1,
+		Next:  1,
 	}
+	r.RaftLog.pendingSnapshot = nil
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
 	// Your Code Here (3A).
 	delete(r.Prs, id)
-	if r.State == StateLeader {
+	if r.id != id && r.State == StateLeader {
 		r.checkCommit()
 	}
+	r.RaftLog.pendingSnapshot = nil
 }
 
 // 差分数组检测是否可以commit

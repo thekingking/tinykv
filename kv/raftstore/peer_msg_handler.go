@@ -50,23 +50,41 @@ func (d *peerMsgHandler) HandleRaftReady() {
 	}
 	ready := d.RaftGroup.Ready()
 	d.Send(d.ctx.trans, ready.Messages)
-	d.apply(&ready)
-	d.peerStorage.SaveReadyState(&ready)
+	if d.apply(&ready) {
+		return
+	}
+	if res, err := d.peerStorage.SaveReadyState(&ready); err != nil {
+		log.Errorf("%s save ready state error %v", d.Tag, err)
+	} else if res != nil {
+		d.updateMeta(res.Region)
+	}
 	d.RaftGroup.Advance(ready)
 }
 
-func (d *peerMsgHandler) apply(ready *raft.Ready) {
+func (d *peerMsgHandler) apply(ready *raft.Ready) bool {
 	if len(ready.CommittedEntries) > 0 {
 		for _, entry := range ready.CommittedEntries {
-			resp := d.newCmdResp(entry)
-			d.doResp(resp, &entry)
+			if stop, resp := d.newCmdResp(entry); stop {
+				return true
+			} else {
+				d.doResp(resp, &entry)
+			}
 		}
 	}
+	return false
 }
 
-func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) *raft_cmdpb.AdminResponse {
+func (d *peerMsgHandler) updateMeta(region *metapb.Region) {
+	meta := d.ctx.storeMeta
+	meta.Lock()
+	defer meta.Unlock()
+	meta.regionRanges.ReplaceOrInsert(&regionItem{region})
+	meta.regions[d.regionId] = region
+}
+
+func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) (bool, *raft_cmdpb.AdminResponse) {
 	if req == nil {
-		return nil
+		return false, nil
 	}
 	resp := &raft_cmdpb.AdminResponse{CmdType: req.CmdType}
 	switch req.CmdType {
@@ -78,7 +96,6 @@ func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) *raft_cmdp
 			d.peerStorage.applyState.TruncatedState.Term = compactLogReq.CompactTerm
 		}
 		resp.CompactLog = &raft_cmdpb.CompactLogResponse{}
-	case raft_cmdpb.AdminCmdType_Split:
 	case raft_cmdpb.AdminCmdType_TransferLeader:
 		transferLeaderReq := req.TransferLeader
 		if d.IsLeader() && transferLeaderReq.Peer != nil {
@@ -86,9 +103,36 @@ func (d *peerMsgHandler) handleAdminReq(req *raft_cmdpb.AdminRequest) *raft_cmdp
 		}
 		resp.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
 	case raft_cmdpb.AdminCmdType_ChangePeer:
+		changeReq := req.ChangePeer
+		d.RaftGroup.ApplyConfChange(eraftpb.ConfChange{
+			ChangeType: changeReq.ChangeType,
+			NodeId:     changeReq.Peer.Id,
+		})
+		switch changeReq.ChangeType {
+		case eraftpb.ConfChangeType_AddNode:
+			if util.FindPeer(d.peerStorage.region, changeReq.Peer.StoreId) == nil {
+				d.insertPeerCache(changeReq.Peer)
+				d.peerStorage.region.Peers = append(d.peerStorage.region.Peers, changeReq.Peer)
+				d.peerStorage.region.RegionEpoch.ConfVer++
+				d.updateMeta(d.Region())
+			}
+		case eraftpb.ConfChangeType_RemoveNode:
+			if d.PeerId() == changeReq.Peer.Id {
+				d.destroyPeer()
+				return true, nil
+			}
+			if util.FindPeer(d.peerStorage.region, changeReq.Peer.StoreId) != nil {
+				d.removePeerCache(changeReq.Peer.Id)
+				util.RemovePeer(d.peerStorage.region, changeReq.Peer.StoreId)
+				d.peerStorage.region.RegionEpoch.ConfVer++
+				d.updateMeta(d.Region())
+			}
+		}
+		resp.ChangePeer = &raft_cmdpb.ChangePeerResponse{}
+	case raft_cmdpb.AdminCmdType_Split:
 	case raft_cmdpb.AdminCmdType_InvalidAdmin:
 	}
-	return resp
+	return false, resp
 }
 
 func (d *peerMsgHandler) handleReq(req *raft_cmdpb.Request) (*raft_cmdpb.Response, error) {
@@ -128,18 +172,22 @@ func (d *peerMsgHandler) handleReq(req *raft_cmdpb.Request) (*raft_cmdpb.Respons
 	return resp, nil
 }
 
-func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResponse {
+func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) (bool, *raft_cmdpb.RaftCmdResponse) {
 	cmd_req := raft_cmdpb.RaftCmdRequest{}
 	cmd_resp := raft_cmdpb.RaftCmdResponse{}
 	if err := cmd_req.Unmarshal(entry.Data); err != nil {
 		log.Infof("%s unmarshal raft command error %v", d.Tag, err)
-		return ErrResp(err)
+		return false, ErrResp(err)
 	}
-	cmd_resp.AdminResponse = d.handleAdminReq(cmd_req.AdminRequest)
+	var stop bool
+	stop, cmd_resp.AdminResponse = d.handleAdminReq(cmd_req.AdminRequest)
+	if stop {
+		return true, nil
+	}
 	for _, req := range cmd_req.Requests {
 		resp, err := d.handleReq(req)
 		if err != nil {
-			return ErrResp(err)
+			return false, ErrResp(err)
 		}
 		if resp != nil {
 			cmd_resp.Responses = append(cmd_resp.Responses, resp)
@@ -148,7 +196,7 @@ func (d *peerMsgHandler) newCmdResp(entry eraftpb.Entry) *raft_cmdpb.RaftCmdResp
 	cmd_resp.Header = &raft_cmdpb.RaftResponseHeader{
 		CurrentTerm: d.Term(),
 	}
-	return &cmd_resp
+	return false, &cmd_resp
 }
 
 func (d *peerMsgHandler) doResp(resp *raft_cmdpb.RaftCmdResponse, entry *eraftpb.Entry) {

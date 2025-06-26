@@ -343,6 +343,7 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 		PrevRegion: ps.region,
 		Region:     snapData.Region,
 	}
+	ps.SetRegion(snapData.Region)
 
 	ps.raftState = &rspb.RaftLocalState{
 		HardState: &eraftpb.HardState{
@@ -406,6 +407,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	} else {
 		raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
 		kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+		meta.WriteRegionState(kvWB, ps.region, rspb.PeerState_Normal)
 	}
 
 	raftWB.WriteToDB(ps.Engines.Raft)
